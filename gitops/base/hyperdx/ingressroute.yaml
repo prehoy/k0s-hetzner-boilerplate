@@ -1,0 +1,17 @@
+# HyperDX UI at logs.example.com. Main-cluster Traefik (k0s extension) certResolver is "letsencrypt".
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: hyperdx
+  namespace: observability
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - kind: Rule
+      match: Host(`logs.example.com`)
+      services:
+        - name: hyperdx
+          port: 3000
+  tls:
+    certResolver: letsencrypt

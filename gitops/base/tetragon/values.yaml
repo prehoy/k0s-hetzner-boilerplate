@@ -1,0 +1,32 @@
+# Tetragon (observability-only) — render-time values. Used ONLY by `helm template` to produce
+# tetragon.gen.yaml (the committed manifest ArgoCD applies). See header of tetragon.gen.yaml and
+# docs/RUNBOOK-tetragon.md for the render/bump command. NOT consumed by the cluster at runtime.
+#
+# Chart defaults already give us what we want, so we don't override them:
+#   - tolerations: [{operator: Exists}]  -> DaemonSet runs on EVERY node (3 managers + static + cas),
+#     matching where otel-logs-agent runs, so no node is blind.
+#   - export.mode: stdout                -> JSON events to the export-stdout container's stdout, tailed
+#     from /var/log/pods by otel-logs-agent -> HyperDX (zero pipeline changes).
+# We only bound resources: these pods run on managers too and must not be able to wedge a node.
+#
+# ponytail: exec events are high-cardinality. If HyperDX ingest gets noisy, add a process/namespace
+# field-filter under `export.stdout` (allowlist/denylist) and re-render — don't pre-optimize. Ship defaults.
+
+# Tetragon agent container (privileged eBPF).
+tetragon:
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      memory: 512Mi
+
+# export-stdout sidecar (tails the JSON log to stdout).
+export:
+  resources:
+    requests:
+      cpu: 20m
+      memory: 64Mi
+    limits:
+      memory: 128Mi
+# Operator (TracingPolicy CRDs) left at chart defaults (1 pod, 10m/500m cpu, 128Mi) — already modest.

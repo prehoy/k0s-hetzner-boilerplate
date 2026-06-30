@@ -1,0 +1,94 @@
+- name: Configure NFS
+  become: true
+  hosts:
+    - nfs
+  vars:
+    shared_folder_path: /mnt/nfs/
+    volume_id: 104692162
+  tasks:
+    - name: Update and Upgrade Instance
+      apt:
+        update_cache: true
+        upgrade: true
+
+    - name: Install NFS Server
+      apt:
+        name: nfs-kernel-server
+        state: present
+
+    - name: Tune NFS Server fs.file-max
+      ansible.posix.sysctl:
+        name: fs.file-max
+        value: 2097152
+        sysctl_set: true
+        state: present
+        reload: true
+
+    - name: Set sunrpc slots
+      ansible.posix.sysctl:
+        name: sunrpc.tcp_slot_table_entries
+        value: 128
+        sysctl_set: true
+        state: present
+        reload: true
+
+    - name: Ensure Shared Folder Path Exists
+      file:
+        path: /mnt/nfs/
+        state: directory
+        owner: root
+        group: root
+        mode: 0755
+
+    - name: Configure NFS Exports
+      template:
+        src: exports.j2
+        dest: /etc/exports
+        owner: root
+        group: root
+        mode: 0644
+
+    - name: Export NFS Shares
+      command: exportfs -a
+
+    - name: Check if HC Volume is available in /dev/disk/by-id
+      stat:
+        path: "/dev/disk/by-id/scsi-0HC_Volume_{{ volume_id }}"
+      register: hc_volume_exists
+
+    - name: Mount HC Volume to Shared Folder Path
+      mount:
+        path: "{{ shared_folder_path }}"
+        src: "/dev/disk/by-id/scsi-0HC_Volume_{{ volume_id }}"
+        fstype: ext4
+        state: mounted
+        opts: defaults,discard
+      when: hc_volume_exists.stat.exists
+
+    - name: Restart NFS Server
+      service:
+        name: nfs-kernel-server
+        state: restarted
+        enabled: true
+
+    - name: Ensure cluster folder exists
+      file:
+        path: /mnt/nfs/cluster
+        state: directory
+        owner: root
+        group: root
+        mode: 0755
+
+    - name: Ensure backoffice folder exists
+      file:
+        path: /mnt/nfs/backoffice
+        state: directory
+        owner: root
+        group: root
+        mode: 0755
+
+    # - name: Start NFS Server
+    #   service:
+    #     name: nfs-kernel-server
+    #     state: started
+    #     enabled: true

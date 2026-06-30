@@ -1,0 +1,128 @@
+# HAProxy in front of the Patroni cluster (simusa_cluster, 10.0.0.100-102 (PROD)).
+# Dynamic leader/replica routing via Patroni's REST health endpoints on :8008:
+#   GET /primary -> 200 only on the current leader   (write port 5432)
+#   GET /replica -> 200 on replicas                  (read  port 5433)
+# So writes always reach the live primary even after a Patroni failover.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: haproxy-patroni
+  namespace: databases
+data:
+  haproxy.cfg: |
+    global
+      maxconn 2000
+      log stdout format raw local0
+    defaults
+      mode tcp
+      log global
+      option tcplog
+      retries 3
+      timeout connect 5s
+      timeout client 1h
+      timeout server 1h
+      default-server inter 3s fall 3 rise 2 on-marked-down shutdown-sessions
+
+    # write traffic -> current Patroni leader
+    listen pg-primary
+      bind *:5432
+      option httpchk GET /primary
+      http-check expect status 200
+      server db-0 10.0.0.100:5432 check port 8008
+      server db-1 10.0.0.101:5432 check port 8008
+      server db-2 10.0.0.102:5432 check port 8008
+
+    # read traffic -> replicas (round-robin)
+    listen pg-replica
+      bind *:5433
+      balance roundrobin
+      option httpchk GET /replica
+      http-check expect status 200
+      server db-0 10.0.0.100:5432 check port 8008
+      server db-1 10.0.0.101:5432 check port 8008
+      server db-2 10.0.0.102:5432 check port 8008
+
+    # stats (cluster-internal only)
+    listen stats
+      bind *:7000
+      mode http
+      stats enable
+      stats uri /
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: haproxy-patroni
+  namespace: databases
+  labels:
+    app: haproxy-patroni
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: haproxy-patroni
+  strategy:
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app: haproxy-patroni
+      annotations:
+        checksum/config: "v1"
+    spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    app: haproxy-patroni
+      containers:
+        - name: haproxy
+          image: haproxy:2.9-alpine
+          ports:
+            - { name: pg-write, containerPort: 5432 }
+            - { name: pg-read, containerPort: 5433 }
+            - { name: stats, containerPort: 7000 }
+          volumeMounts:
+            - name: config
+              mountPath: /usr/local/etc/haproxy
+              readOnly: true
+          readinessProbe:
+            tcpSocket: { port: 5432 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests: { cpu: 20m, memory: 32Mi }
+            limits: { memory: 128Mi }
+      volumes:
+        - name: config
+          configMap:
+            name: haproxy-patroni
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: haproxy-patroni
+  namespace: databases
+spec:
+  selector:
+    app: haproxy-patroni
+  ports:
+    - { name: pg-write, port: 5432, targetPort: 5432 }
+    - { name: pg-read, port: 5433, targetPort: 5433 }
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: haproxy-patroni
+  namespace: databases
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app: haproxy-patroni

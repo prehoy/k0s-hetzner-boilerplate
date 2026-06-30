@@ -1,0 +1,38 @@
+# Databasus — self-hosted DB backup manager (Postgres/MySQL/Mongo) with a web UI.
+# On the backoffice box so backups run independently of the serving cluster. It reaches the
+# Patroni Postgres nodes via the swarm db-lb router (10.0.0.100-102). Backups + DB connections
+# are declared as IaC in prod/terraform/databasus/ (the Databasus Terraform provider).
+# Exposed at databasus.bo.example.com via Traefik.
+version: "3.8"
+
+services:
+  databasus:
+    # Pinned (was :latest) to match the unofficial Terraform provider's supported version
+    # (provider ~> 0.8.1 <-> Databasus v3.42.0). Bump image + provider together. See
+    # prod/terraform/databasus/.
+    image: databasus/databasus:v3.42.0
+    volumes:
+      - databasus-data:/databasus-data
+    networks:
+      - traefik-public
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
+      labels:
+        traefik.enable: "true"
+        traefik.swarm.network: traefik-public
+        traefik.http.routers.databasus.rule: Host(`databasus.bo.example.com`)
+        traefik.http.routers.databasus.entrypoints: websecure
+        traefik.http.routers.databasus.tls: "true"
+        traefik.http.routers.databasus.tls.certresolver: le
+        traefik.http.services.databasus.loadbalancer.server.port: "4005"
+
+networks:
+  traefik-public:
+    external: true
+
+volumes:
+  databasus-data:

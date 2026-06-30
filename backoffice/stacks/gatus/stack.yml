@@ -1,0 +1,45 @@
+# Gatus — code-defined health monitoring (replaces uptime-kuma). Config is config.yaml (IaC,
+# secret-free); the Brevo SMTP password is injected as $SMTP_PASSWORD at deploy time from the
+# sealed gatus.env.sops (the reconciler decrypts gatus.env and sources it before stack deploy).
+version: "3.8"
+
+services:
+  gatus:
+    image: ghcr.io/twin/gatus:v5.36.0
+    environment:
+      - GATUS_CONFIG_PATH=/config/config.yaml
+      - SMTP_PASSWORD=${SMTP_PASSWORD}
+      # Pushover (emergency, priority 2) for the production page — see RUNBOOK-gatus-monitoring.md.
+      - PUSHOVER_APP_TOKEN=${PUSHOVER_APP_TOKEN}
+      - PUSHOVER_USER_KEY=${PUSHOVER_USER_KEY}
+      # Forces a task restart whenever this stack's files change (e.g. config.yaml edits), so the
+      # bind-mounted config is re-read. STACK_HASH is exported by the reconciler; default 0 for a
+      # manual `docker stack deploy`. This is what makes Gatus auto-reload on a git push.
+      - RECONCILE_HASH=${STACK_HASH:-0}
+    volumes:
+      # absolute path: Swarm bind mounts are resolved by dockerd
+      - /opt/simusa-infra/backoffice/stacks/gatus/config.yaml:/config/config.yaml:ro
+      - gatus-data:/data
+    networks:
+      - traefik-public
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
+      labels:
+        traefik.enable: "true"
+        traefik.swarm.network: traefik-public
+        traefik.http.routers.gatus.rule: Host(`status.example.com`) || Host(`uptime.example.com`)
+        traefik.http.routers.gatus.entrypoints: websecure
+        traefik.http.routers.gatus.tls: "true"
+        traefik.http.routers.gatus.tls.certresolver: le
+        traefik.http.services.gatus.loadbalancer.server.port: "8080"
+
+networks:
+  traefik-public:
+    external: true
+
+volumes:
+  gatus-data:

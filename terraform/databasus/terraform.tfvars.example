@@ -1,0 +1,14 @@
+# Copy to terraform.tfvars (gitignored) and fill in. NEVER commit the real values.
+
+databasus_admin_email    = "admin"
+databasus_admin_password = "CHANGE_ME"
+
+# Hetzner Console (PROD project) -> Object Storage -> Manage credentials (S3 keys)
+hetzner_s3_access_key = "CHANGE_ME"
+hetzner_s3_secret_key = "CHANGE_ME"
+# hetzner_s3_endpoint = "https://hel1.your-objectstorage.com"  # change region if not hel1
+# backup_bucket       = "db-backups"
+
+# Dedicated read-only backup role (see README), NOT the igor superuser:
+backup_user     = "databasus_backup"
+backup_password = "CHANGE_ME"

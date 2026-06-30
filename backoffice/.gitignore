@@ -1,0 +1,5 @@
+stacks/*/cf_dns_api_token
+# SOPS-decrypted at reconcile time, never commit plaintext.
+# (scoped: wg-portal's config.yaml is the decrypted secret; gatus's config.yaml is committed IaC)
+stacks/wg-portal/config.yaml
+stacks/*/*.env

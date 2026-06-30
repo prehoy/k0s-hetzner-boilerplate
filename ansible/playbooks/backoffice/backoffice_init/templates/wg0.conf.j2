@@ -1,0 +1,16 @@
+[Interface]
+PrivateKey = {{ wg_private_key }}
+Address = {{ wg_address }}
+ListenPort = {{ wg_listen_port }}
+PostUp = sysctl net.ipv4.ip_forward=1
+PostUp = iptables -A FORWARD -i enp7s0 -o %i -j ACCEPT
+PostUp = iptables -A FORWARD -i %i -j ACCEPT
+PostUp = iptables -t nat -A POSTROUTING -o enp7s0 -j MASQUERADE
+PostDown = sysctl net.ipv4.ip_forward=0
+PostDown = iptables -D FORWARD -i enp7s0 -o %i -j ACCEPT
+PostDown = iptables -D FORWARD -i %i -j ACCEPT
+PostDown = iptables -t nat -D POSTROUTING -o enp7s0 -j MASQUERADE
+
+[Peer]
+PublicKey = {{ wg_client_public_key }}
+AllowedIPs = 10.200.200.2/32

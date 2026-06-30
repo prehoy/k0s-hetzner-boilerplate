@@ -1,0 +1,63 @@
+# Gatus — backoffice (mgmt node) -> served at status.example.com (PUBLIC status page).
+# Watches the production customer-facing apps in the cluster from independent infra (the mgmt node),
+# so a cluster failure is still reported. The in-cluster gatus (status.bo.example.com) watches the mgmt
+# plane in turn. Email alerts via SMTP ($SMTP_PASSWORD from the sealed gatus.env.sops).
+ui:
+  title: "Status"
+  header: "Status"
+  description: "Production services"
+  logo: "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxMDAgMTAwIj48Y2lyY2xlIGN4PSI1MCIgY3k9IjUwIiByPSI0OCIgZmlsbD0iI2ZmZmZmZiIvPjwvc3ZnPg=="
+  link: "https://example.com"
+storage:
+  type: sqlite
+  path: /data/gatus.db
+
+alerting:
+  email:
+    from: "alerts@example.com"
+    username: "CHANGEME@smtp-provider.com"
+    password: "${SMTP_PASSWORD}"
+    host: "smtp-relay.brevo.com"
+    port: 587
+    to: "office@example.com"
+  # Pushover EMERGENCY (priority 2 -> re-buzz until acknowledged, retry 60s, expire 1h). Uses the
+  # `custom` provider, NOT the native `pushover` one: the native provider can't send retry/expire and
+  # Pushover's API rejects priority 2 without them (silently undelivered).
+  custom:
+    url: "https://api.pushover.net/1/messages.json"
+    method: "POST"
+    headers:
+      Content-Type: "application/json"
+    body: |
+      {"token":"${PUSHOVER_APP_TOKEN}","user":"${PUSHOVER_USER_KEY}","title":"[ENDPOINT_NAME] [ALERT_TRIGGERED_OR_RESOLVED]","message":"[ENDPOINT_GROUP] / [ENDPOINT_NAME] is [ALERT_TRIGGERED_OR_RESOLVED] [ALERT_DESCRIPTION]","priority":2,"retry":60,"expire":3600}
+
+x-defaults:
+  conditions: &conditions
+    - "[STATUS] == 200"
+  # APIs/webhooks return 200/404/401 on `/` by design — "up" = serving, no 5xx.
+  appcheck: &appcheck
+    - "[STATUS] < 500"
+  alerts: &alerts
+    - type: email
+      failure-threshold: 3
+      success-threshold: 2
+      send-on-resolved: true
+    - type: custom
+      failure-threshold: 3
+      success-threshold: 2
+      send-on-resolved: true
+
+# Add one block per public service you want on the production status page.
+endpoints:
+  - name: Website
+    group: Production
+    url: https://example.com
+    interval: 60s
+    conditions: *conditions
+    alerts: *alerts
+  - name: Example API
+    group: Production
+    url: https://api.example.com
+    interval: 60s
+    conditions: *appcheck
+    alerts: *alerts

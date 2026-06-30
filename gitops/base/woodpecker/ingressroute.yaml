@@ -1,0 +1,16 @@
+# Woodpecker UI + GitHub OAuth callback + webhooks land here.
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: woodpecker
+  namespace: ci-build
+spec:
+  entryPoints: [websecure]
+  routes:
+    - kind: Rule
+      match: Host(`ci.example.com`)
+      services:
+        - name: woodpecker-server
+          port: 80
+  tls:
+    certResolver: letsencrypt

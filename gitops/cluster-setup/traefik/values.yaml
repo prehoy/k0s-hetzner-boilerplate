@@ -1,0 +1,122 @@
+# Traefik (Helm chart traefik-39.0.0 / app v3.6.7), namespace `traefik`, release `traefik`.
+# PROD. Traefik is a MANUAL helm release (NOT in the ArgoCD app-of-apps) — install it
+# after the cluster + Calico are up; ArgoCD only manages IngressRoutes/secrets.
+#
+# GLOBAL + hostNetwork design:
+#   - DaemonSet on ALL nodes (tolerates the control-plane taint) so every node,
+#     including the controllers HAProxy health-checks, runs Traefik.
+#   - hostNetwork: true -> Traefik binds web/websecure directly on each node's host
+#     ports (HAProxy hits them directly, bypassing the flaky kube-proxy NodePort
+#     path) and reaches the apiserver via the node IP (10.96.0.1 from host netns).
+#   - NO pod-node-masq DaemonSet needed: prod runs Calico (VXLAN, natOutgoing), which
+#     SNATs pod->node-IP replies correctly. (pod-node-masq was the kube-router band-aid,
+#     removed during the Calico migration — do NOT re-add it.)
+#   - ports.traefik.port 8080 -> 9000 to avoid host :8080 collisions under hostNetwork.
+#   - service.type ClusterIP (no NodePort; hostNetwork binds the host ports).
+#
+# Apply:  helm -n traefik upgrade --install traefik traefik/traefik --version 39.0.0 -f values.yaml
+
+hostNetwork: true
+
+# hostNetwork can't surge (two pods can't share a node's host port) -> allow unavailability
+updateStrategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxUnavailable: 1
+    maxSurge: 0
+
+deployment:
+  kind: DaemonSet
+  revisionHistoryLimit: 2
+  dnsPolicy: ClusterFirstWithHostNet
+
+# run on the control-plane nodes too (they are also workers and HAProxy checks them)
+tolerations:
+  - key: node-role.kubernetes.io/control-plane
+    operator: Exists
+    effect: NoSchedule
+
+service:
+  type: ClusterIP
+
+ports:
+  traefik:
+    port: 9000          # was 8080; avoid kube-router host :8080 collision (hostNetwork)
+  web:
+    port: 32491
+  websecure:
+    port: 30647
+
+api:
+  dashboard: true
+  insecure: false
+
+certificatesResolvers:
+  letsencrypt:
+    acme:
+      email: office@example.com
+      storage: /data/acme.json
+      dnsChallenge:
+        provider: cloudflare
+        delayBeforeCheck: 0
+
+env:
+  - name: CLOUDFLARE_DNS_API_TOKEN
+    valueFrom:
+      secretKeyRef:
+        name: cloudflare-api-token
+        key: CF_API_TOKEN
+
+experimental:
+  fastProxy: {}
+
+ingressClass:
+  enabled: true
+
+ingressRoute:
+  dashboard:
+    enabled: true
+    entryPoints:
+      - websecure
+    matchRule: Host(`traefik.example.com`)
+    middlewares:
+      - name: dashboard-auth
+    tls:
+      certResolver: letsencrypt
+
+extraObjects:
+  - apiVersion: v1
+    kind: Secret
+    metadata:
+      name: dashboard-auth-secret
+    type: kubernetes.io/basic-auth
+    # TODO(prod): replace admin/admin before exposing traefik.example.com publicly.
+    stringData:
+      username: admin
+      password: admin
+  - apiVersion: traefik.io/v1alpha1
+    kind: Middleware
+    metadata:
+      name: dashboard-auth
+    spec:
+      basicAuth:
+        secret: dashboard-auth-secret
+
+logs:
+  general:
+    level: INFO
+  access:
+    enabled: true
+
+metrics:
+  prometheus:
+    enabled: true
+
+persistence:
+  enabled: false
+
+providers:
+  kubernetesGateway:
+    enabled: false
+  kubernetesIngress:
+    enabled: true

@@ -1,0 +1,12 @@
+# Reset any existing rules first
+--force reset
+
+# Set defaults
+default deny incoming
+default allow outgoing
+
+# Allow essential ports
+allow 22/tcp
+allow 80/tcp
+allow 443/tcp
+allow from 10.0.0.0/16

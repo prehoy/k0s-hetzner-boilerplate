@@ -1,0 +1,83 @@
+#!/bin/bash
+# keepalived notify: $1 = MASTER|BACKUP. On MASTER this LB takes over three things:
+#   1. the public floating IP             -> ingress HA
+#   2. the Hetzner private default route   -> egress NAT HA (route gateway = this LB)
+#   3. the control-plane alias IP 10.0.0.240 -> apiserver/konnectivity HA (haproxy here fronts the
+#      3 controllers on 6443/8132). Hetzner private IPs don't VRRP-migrate, so the alias is moved via
+#      the Cloud API (clear from the peer LB, set on self), same mechanism as the NFS VIP.
+# On BACKUP we just drop the local alias addr (the new master claims it via the API).
+set -u
+STATE="${1:-MASTER}"
+IP='{{ floating_ip_name }}'
+TOKEN='{{ hetzner_api_token }}'
+NET_NAME='{{ hetzner_network_name | default("mainNet") }}'
+CP_VIP='10.0.0.240'
+IFACE='{{ cloud_private_network_adapter | default("enp7s0") }}'
+MY_PRIV='{{ ansible_enp7s0.ipv4.address }}'
+PEER_PRIV='{{ "10.0.0.211" if ansible_enp7s0.ipv4.address == "10.0.0.210" else "10.0.0.210" }}'
+API='https://api.hetzner.cloud/v1'
+AUTH=(-H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json")
+log() { logger -t lb-failover "$*"; echo "$*"; }
+
+NET_ID=$(curl -fsS "${AUTH[@]}" "$API/networks?name=$NET_NAME" | jq -r '.networks[0].id')
+
+claim_cp_vip() {
+  { [ -z "$NET_ID" ] || [ "$NET_ID" = "null" ]; } && { log "ERROR: no network $NET_NAME"; return 1; }
+  local servers self peer
+  servers=$(curl -fsS "${AUTH[@]}" "$API/servers?per_page=50")
+  self=$(echo "$servers" | jq -r --arg ip "$MY_PRIV"   '.servers[] | select(.private_net[]?.ip==$ip) | .id')
+  peer=$(echo "$servers" | jq -r --arg ip "$PEER_PRIV" '.servers[] | select(.private_net[]?.ip==$ip) | .id')
+  [ -n "$peer" ] && [ "$peer" != "null" ] && curl -fsS "${AUTH[@]}" \
+      -X POST "$API/servers/$peer/actions/change_alias_ips" \
+      -d "{\"network\":$NET_ID,\"alias_ips\":[]}" >/dev/null && log "cleared CP VIP from peer $peer"
+  local n=0
+  while [ $n -lt 10 ]; do
+    if curl -fsS "${AUTH[@]}" -X POST "$API/servers/$self/actions/change_alias_ips" \
+        -d "{\"network\":$NET_ID,\"alias_ips\":[\"$CP_VIP\"]}" >/dev/null; then
+      log "claimed CP VIP $CP_VIP on self $self"; break
+    fi
+    n=$((n+1)); sleep 3
+  done
+  ip addr replace "$CP_VIP/32" dev "$IFACE" || true
+}
+
+if [ "$STATE" = "BACKUP" ]; then
+  ip addr del "$CP_VIP/32" dev "$IFACE" 2>/dev/null || true
+  log "BACKUP: released CP VIP locally"
+  exit 0
+fi
+
+# ---- MASTER ----
+# 1. claim the public floating IP (ingress), retried
+n=0
+while [ $n -lt 10 ]; do
+    if [ "$(/opt/hcloud-ip -ip "$IP" -key $TOKEN)" == "Server called $HOSTNAME was found" ]; then
+        break
+    fi
+    n=$((n+1)); sleep 3
+done
+
+# 2. repoint the network default route at this LB (egress NAT gateway)
+if [ -z "$NET_ID" ] || [ "$NET_ID" = "null" ]; then
+    log "ERROR: could not resolve Hetzner network '$NET_NAME'"; exit 0
+fi
+CUR_GW=$(curl -fsS "${AUTH[@]}" "$API/networks/$NET_ID" \
+    | jq -r '.network.routes[]? | select(.destination=="0.0.0.0/0") | .gateway')
+if [ "$CUR_GW" != "$MY_PRIV" ]; then
+    if [ -n "$CUR_GW" ] && [ "$CUR_GW" != "null" ]; then
+        curl -fsS "${AUTH[@]}" -X POST "$API/networks/$NET_ID/actions/delete_route" \
+            -d "{\"destination\":\"0.0.0.0/0\",\"gateway\":\"$CUR_GW\"}" >/dev/null \
+            && log "deleted old default route gw=$CUR_GW"
+    fi
+    n=0
+    while [ $n -lt 10 ]; do
+        if curl -fsS "${AUTH[@]}" -X POST "$API/networks/$NET_ID/actions/add_route" \
+            -d "{\"destination\":\"0.0.0.0/0\",\"gateway\":\"$MY_PRIV\"}" >/dev/null; then
+            log "set default route gw=$MY_PRIV (egress now via $HOSTNAME)"; break
+        fi
+        n=$((n+1)); sleep 3
+    done
+fi
+
+# 3. claim the control-plane alias VIP
+claim_cp_vip

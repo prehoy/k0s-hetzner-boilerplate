@@ -1,0 +1,37 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: monitoring
+resources:
+  - namespace.yaml
+  - rbac.yaml
+  - sealedsecret.yaml
+  - postgres-exporter-sealedsecret.yaml
+  - grafana-pg-sealedsecret.yaml
+  - prometheus-config.yaml
+  - prometheus.yaml
+  - kube-state-metrics.yaml
+  - node-exporter.yaml
+  - postgres-exporter.yaml
+  - alertmanager-config.yaml
+  - alertmanager.yaml
+  - grafana-config.yaml
+  - grafana.yaml
+  - monitoring-auth.yaml
+  - monitoring-auth-sealedsecret.yaml
+  - ingressroute.yaml
+
+# Grafana dashboards as code: each .json under dashboards/ becomes a key in the grafana-dashboards
+# ConfigMap, mounted into Grafana and auto-loaded by the file provisioner. Add a board = drop a .json.
+configMapGenerator:
+  - name: grafana-dashboards
+    files:
+      - dashboards/traefik-requests.json
+      - dashboards/app-latency.json
+      - dashboards/cluster-overview.json
+      - dashboards/storage-nfs.json
+      - dashboards/postgres.json
+      - dashboards/translators.json          # translator usage from Postgres (grafana_ro RO role)
+      - dashboards/cluster-memory.json       # what's eating RAM: top pods/namespaces/nodes + leak trends
+      - dashboards/node-exporter-full.json   # community board #1860, datasource patched to uid=prometheus
+generatorOptions:
+  disableNameSuffixHash: true   # stable name so grafana.yaml's volume reference doesn't break

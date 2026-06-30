@@ -1,0 +1,62 @@
+# Static NFS-backed PVs/PVCs (storage on the HA NFS VIP 10.0.0.199:/mnt/nfs — DRBD pair nfs-0/nfs-1).
+# Dirs pre-created on the NFS box: /mnt/nfs/hyperdx/{clickhouse,mongodb}. Reclaim=Retain so a
+# PVC delete never wipes the data; claimRef pins each PV to its PVC.
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: hyperdx-clickhouse
+spec:
+  capacity:
+    storage: 20Gi
+  accessModes: [ReadWriteOnce]
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: ""
+  nfs:
+    server: 10.0.0.199   # HA VIP (floats between nfs-0/nfs-1)
+    path: /mnt/nfs/hyperdx/clickhouse
+  claimRef:
+    namespace: observability
+    name: clickhouse-data
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: clickhouse-data
+  namespace: observability
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: ""
+  volumeName: hyperdx-clickhouse
+  resources:
+    requests:
+      storage: 20Gi
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: hyperdx-mongodb
+spec:
+  capacity:
+    storage: 5Gi
+  accessModes: [ReadWriteOnce]
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: ""
+  nfs:
+    server: 10.0.0.199   # HA VIP (floats between nfs-0/nfs-1)
+    path: /mnt/nfs/hyperdx/mongodb
+  claimRef:
+    namespace: observability
+    name: mongodb-data
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: mongodb-data
+  namespace: observability
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: ""
+  volumeName: hyperdx-mongodb
+  resources:
+    requests:
+      storage: 5Gi

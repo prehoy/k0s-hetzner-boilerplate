@@ -1,0 +1,22 @@
+# Headless service for stable per-pod DNS (keydb-ha-0.keydb-ha.data.svc...) used by replication,
+# sentinel discovery, and the haproxy backends.
+apiVersion: v1
+kind: Service
+metadata: { name: keydb-ha, namespace: data }
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true     # replicas must be resolvable before they're "ready" (initial sync)
+  selector: { app: keydb-ha }
+  ports:
+    - { name: keydb,    port: 6379,  targetPort: 6379 }
+    - { name: sentinel, port: 26379, targetPort: 26379 }
+---
+# Stable client endpoint -> HAProxy -> current master. At cutover the existing `keydb` Service is
+# repointed at the haproxy pods (see RUNBOOK-keydb-ha.md); this one is for validation in the meantime.
+apiVersion: v1
+kind: Service
+metadata: { name: keydb-ha-haproxy, namespace: data }
+spec:
+  selector: { app: keydb-ha-haproxy }
+  ports:
+    - { name: redis, port: 6379, targetPort: 6379 }

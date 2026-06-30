@@ -1,0 +1,34 @@
+global
+maxconn 100000
+
+defaults
+    mode tcp
+    log global
+    option httplog
+    option dontlognull
+    retries 3
+    option redispatch
+    timeout connect 5000
+    timeout client 50000
+    timeout server 50000
+    option clitcpka
+    option srvtcpka
+
+listen stats
+   mode http
+   bind *:7654
+   stats enable
+   stats uri /
+
+listen http
+   mode tcp
+   bind *:80
+
+   option tcp-check
+   server bo0 127.0.0.1:30080 check
+
+
+listen https
+   mode tcp
+   bind *:443
+   server bg0 127.0.0.1:30443 check

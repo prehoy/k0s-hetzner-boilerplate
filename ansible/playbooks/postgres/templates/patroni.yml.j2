@@ -1,0 +1,65 @@
+scope: simusa_cluster
+name: {{ ansible_hostname }}
+
+log:
+  traceback_level: INFO
+  level: INFO
+  dir: /etc/patroni/logs/
+  file_num: 5
+
+restapi:
+  listen: 0.0.0.0:8008
+  connect_address: {{ ansible_default_ipv4.address }}:8008
+
+etcd3:
+  protocol: http
+  hosts: {{ etcd_hosts}}
+  retry_timeout: 10
+  ttl: 30
+  maximum_concurrent_requests: 10
+  max_retries: 3
+
+bootstrap:
+  dcs:
+    ttl: 30
+    loop_wait: 10
+    retry_timeout : 10
+    maximum_lag_on_failover: 1048576
+    postgresql:
+      use_pg_rewind: true
+      use_slots: true
+      parameters:
+        wal_keep_segments: 100
+        synchronous_commit: off
+        hot_standby: "on"
+        # Standbys tell the primary which row versions they still need, so VACUUM won't remove
+        # them mid-query. Required for long reads on a replica (e.g. Databasus pg_dump via
+        # db-lb:5433) — without it, high-churn DBs hit "canceling statement due to conflict with
+        # recovery". Applied live to the running cluster via `patronictl edit-config`.
+        hot_standby_feedback: "on"
+        # Raised from the default 100: each migrated app runs a PgCat sidecar (pool_size ~20), so the
+        # cluster exhausted 100 slots (FATAL: remaining connection slots reserved for SUPERUSER). 1000
+        # is a ceiling — real backends stay bounded by the PgCat pools. Applied live to the running
+        # cluster via the Patroni REST /config + rolling restart; baked here for cluster (re)creation.
+        max_connections: 1000
+
+  initdb:
+  - encoding: UTF8
+  - data-checksums
+
+  pg_hba:
+  - host replication replicator 0.0.0.0/0 md5
+  - host all all 0.0.0.0/0 md5
+
+postgresql:
+  listen: {{ ansible_default_ipv4.address }}:5432
+  connect_address: {{ ansible_default_ipv4.address }}:5432
+  data_dir: {{data_dir}}
+  bin_dir: {{bin_dir}}
+  authentication:
+    replication:
+      username: replicator
+      password: CHANGEME_patroni_password
+    superuser:
+      username: igor
+      password: CHANGEME_patroni_password

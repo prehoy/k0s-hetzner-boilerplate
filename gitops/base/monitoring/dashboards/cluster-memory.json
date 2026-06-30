@@ -1,0 +1,109 @@
+{
+  "uid": "cluster-memory",
+  "title": "Cluster Memory — what's eating RAM",
+  "tags": ["cluster", "memory", "capacity"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": { "from": "now-6h", "to": "now" },
+  "templating": { "list": [] },
+  "panels": [
+    {
+      "type": "stat", "title": "Node RAM used / capacity",
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "bytes" } },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "textMode": "value_and_name" },
+      "targets": [
+        { "refId": "A", "expr": "sum(node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes)", "legendFormat": "used" },
+        { "refId": "B", "expr": "sum(node_memory_MemTotal_bytes)", "legendFormat": "capacity" }
+      ]
+    },
+    {
+      "type": "gauge", "title": "Cluster RAM utilization %",
+      "gridPos": { "h": 4, "w": 4, "x": 6, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "percent", "min": 0, "max": 100, "thresholds": { "steps": [ { "color": "green", "value": 0 }, { "color": "yellow", "value": 70 }, { "color": "red", "value": 85 } ] } } },
+      "targets": [ { "refId": "A", "expr": "100 * sum(node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes) / sum(node_memory_MemTotal_bytes)" } ]
+    },
+    {
+      "type": "stat", "title": "Requested vs actually used (pods)",
+      "gridPos": { "h": 4, "w": 7, "x": 10, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "bytes" } },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "textMode": "value_and_name" },
+      "targets": [
+        { "refId": "A", "expr": "sum(kube_pod_container_resource_requests{resource=\"memory\"})", "legendFormat": "requested" },
+        { "refId": "B", "expr": "sum(container_memory_working_set_bytes{container!=\"\"})", "legendFormat": "working set (real)" }
+      ]
+    },
+    {
+      "type": "stat", "title": "Nodes",
+      "gridPos": { "h": 4, "w": 7, "x": 17, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "targets": [ { "refId": "A", "expr": "count(node_memory_MemTotal_bytes)", "legendFormat": "total nodes" } ]
+    },
+
+    {
+      "type": "table", "title": "Top 25 pods by RAM (working set)",
+      "gridPos": { "h": 11, "w": 14, "x": 0, "y": 4 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "bytes", "custom": { "displayMode": "gradient-gauge" } } },
+      "options": { "showHeader": true, "sortBy": [ { "displayName": "Value", "desc": true } ] },
+      "targets": [ { "refId": "A", "instant": true, "format": "table", "expr": "topk(25, sum by (namespace, pod) (container_memory_working_set_bytes{container!=\"\", pod!=\"\"}))" } ],
+      "transformations": [ { "id": "organize", "options": { "excludeByName": { "Time": true }, "renameByName": { "Value": "memory" } } } ]
+    },
+    {
+      "type": "bargauge", "title": "Memory by namespace",
+      "gridPos": { "h": 11, "w": 10, "x": 14, "y": 4 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "bytes" } },
+      "options": { "orientation": "horizontal", "displayMode": "gradient", "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "targets": [ { "refId": "A", "instant": true, "expr": "sort_desc(sum by (namespace) (container_memory_working_set_bytes{container!=\"\"}))", "legendFormat": "{{namespace}}" } ]
+    },
+
+    {
+      "type": "timeseries", "title": "Top 10 pods over time (memory leak / growth detection)",
+      "gridPos": { "h": 9, "w": 14, "x": 0, "y": 15 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "bytes", "custom": { "fillOpacity": 10, "stacking": { "mode": "none" } } } },
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["lastNotNull", "max"] } },
+      "targets": [ { "refId": "A", "expr": "topk(10, sum by (namespace, pod) (container_memory_working_set_bytes{container!=\"\", pod!=\"\"}))", "legendFormat": "{{namespace}}/{{pod}}" } ]
+    },
+    {
+      "type": "timeseries", "title": "Memory by namespace over time (stacked)",
+      "gridPos": { "h": 9, "w": 10, "x": 14, "y": 15 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "bytes", "custom": { "fillOpacity": 30, "stacking": { "mode": "normal" } } } },
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["lastNotNull"] } },
+      "targets": [ { "refId": "A", "expr": "sum by (namespace) (container_memory_working_set_bytes{container!=\"\"})", "legendFormat": "{{namespace}}" } ]
+    },
+
+    {
+      "type": "table", "title": "Per-node: RAM used % and used/total (node-exporter)",
+      "gridPos": { "h": 9, "w": 14, "x": 0, "y": 24 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": {}, "overrides": [ { "matcher": { "id": "byName", "options": "used %" }, "properties": [ { "id": "unit", "value": "percent" }, { "id": "custom.displayMode", "value": "gradient-gauge" }, { "id": "max", "value": 100 } ] }, { "matcher": { "id": "byName", "options": "used" }, "properties": [ { "id": "unit", "value": "bytes" } ] }, { "matcher": { "id": "byName", "options": "total" }, "properties": [ { "id": "unit", "value": "bytes" } ] } ] },
+      "options": { "showHeader": true, "sortBy": [ { "displayName": "used %", "desc": true } ] },
+      "targets": [
+        { "refId": "A", "instant": true, "format": "table", "expr": "100 * (1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)", "legendFormat": "{{instance}}" },
+        { "refId": "B", "instant": true, "format": "table", "expr": "node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes" },
+        { "refId": "C", "instant": true, "format": "table", "expr": "node_memory_MemTotal_bytes" }
+      ],
+      "transformations": [
+        { "id": "merge", "options": {} },
+        { "id": "organize", "options": { "excludeByName": { "Time": true, "job": true, "__name__": true, "container": true, "endpoint": true, "namespace": true, "pod": true, "service": true }, "renameByName": { "instance": "node", "Value #A": "used %", "Value #B": "used", "Value #C": "total" } } }
+      ]
+    },
+    {
+      "type": "bargauge", "title": "Top workloads by RAM (deployment/sts)",
+      "gridPos": { "h": 9, "w": 10, "x": 14, "y": 24 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "bytes" } },
+      "options": { "orientation": "horizontal", "displayMode": "gradient", "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "targets": [ { "refId": "A", "instant": true, "expr": "topk(15, sum by (namespace, workload) (label_replace(sum by (namespace, pod)(container_memory_working_set_bytes{container!=\"\"}), \"workload\", \"$1\", \"pod\", \"^(.*)-[a-f0-9]+-[a-z0-9]+$\")))", "legendFormat": "{{namespace}}/{{workload}}" } ]
+    }
+  ]
+}

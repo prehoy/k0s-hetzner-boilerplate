@@ -1,0 +1,17 @@
+# Cluster Gatus UI at status.example.com (the backoffice Gatus is at status.bo.dashka.io).
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: gatus
+  namespace: gatus
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - kind: Rule
+      match: Host(`status.bo.example.com`)
+      services:
+        - name: gatus
+          port: 8080
+  tls:
+    certResolver: letsencrypt

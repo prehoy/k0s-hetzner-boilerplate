@@ -1,0 +1,13 @@
+# Auth gate for the exposed monitoring UIs (alertmanager.example.com, prometheus.example.com) — neither has
+# built-in auth. Basic auth for now; creds in the sealed monitoring-auth secret (kubernetes.io/basic-auth).
+# FUTURE (Google): swap this Middleware's body for a forwardAuth -> oauth2-proxy; the IngressRoutes
+# reference `monitoring-auth` by name, so they don't change.
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: monitoring-auth
+  namespace: monitoring
+spec:
+  basicAuth:
+    secret: monitoring-auth
+    removeHeader: true   # don't forward the Authorization header to the backend

@@ -1,0 +1,76 @@
+# Prometheus server. Single replica, 15d retention. Reachable at http://prometheus.monitoring:9090.
+#
+# STORAGE: local hostPath, NOT NFS. Prometheus' TSDB is unsupported on NFS (mmap + file locking ->
+# corruption under load); metrics are disposable (15d, rebuildable) so local disk is the right call.
+# It's pinned to ONE node (nodeName below) so the TSDB at /var/lib/prometheus is stable across
+# restarts. If that node dies you lose history — fine for metrics; logs stay on NFS via HyperDX.
+# Set spec.template.spec.nodeName to a real node-pool=static worker before applying.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prometheus
+  namespace: monitoring
+spec:
+  replicas: 1
+  strategy: { type: Recreate }   # RWO NFS volume can't be shared during a rollout
+  selector:
+    matchLabels: { app: prometheus }
+  template:
+    metadata:
+      labels: { app: prometheus }
+    spec:
+      serviceAccountName: prometheus
+      securityContext: { fsGroup: 65534, runAsUser: 65534, runAsNonRoot: true }
+      # PIN to the dedicated observability node (k0s-worker-3 / 10.0.0.53, node-pool=observability)
+      # for the local TSDB. Moved off k0s-manager-0: app workloads on the 4GB control-plane nodes made
+      # them OOM-flap (2026-06-19 cluster-wide blip). The obs node is stable + lightly used; tolerate
+      # its dedicated taint. (Earlier home k0s-worker-6 flapped hourly on containerd stalls; obs doesn't.)
+      nodeName: k0s-worker-3
+      tolerations:
+        - { key: dedicated, operator: Equal, value: observability, effect: NoSchedule }
+      initContainers:
+        # hostPath is root-owned on first create; make it writable by the nobody (65534) Prometheus user.
+        - name: chown-data
+          image: busybox:1.36
+          command: ["sh", "-c", "mkdir -p /data && chown 65534:65534 /data"]
+          securityContext: { runAsUser: 0, runAsNonRoot: false }
+          volumeMounts: [{ name: data, mountPath: /data }]
+      containers:
+        - name: prometheus
+          image: prom/prometheus:v3.1.0
+          args:
+            - --config.file=/etc/prometheus/prometheus.yml
+            - --storage.tsdb.path=/data
+            - --storage.tsdb.retention.time=15d
+            - --web.enable-lifecycle
+            # so alert "Source" links (generatorURL) use the public URL, not the in-cluster pod
+            - --web.external-url=https://prometheus.example.com
+          ports: [{ name: web, containerPort: 9090 }]
+          volumeMounts:
+            - { name: config, mountPath: /etc/prometheus }
+            - { name: rules, mountPath: /etc/prometheus/rules }
+            - { name: data, mountPath: /data }
+          readinessProbe:
+            httpGet: { path: /-/ready, port: web }
+            initialDelaySeconds: 15
+          resources:
+            # Steady state ~20m CPU / ~120Mi; the high LIMIT (not the request) is what lets dashboard
+            # query bursts (Node Exporter Full ~30 panels) use up to 2 cores without throttling. The
+            # request only reserves scheduling space, so keep it near real usage — a 1-core reservation
+            # was ~980m of dead bin-packing headroom that blocked freeing the managers.
+            requests: { cpu: "150m", memory: "512Mi" }
+            limits: { cpu: "2", memory: "2Gi" }
+      volumes:
+        - { name: config, configMap: { name: prometheus-config } }
+        - { name: rules, configMap: { name: prometheus-rules } }
+        - name: data
+          hostPath: { path: /var/lib/prometheus, type: DirectoryOrCreate }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus
+  namespace: monitoring
+spec:
+  selector: { app: prometheus }
+  ports: [{ name: web, port: 9090, targetPort: web }]

@@ -1,0 +1,78 @@
+#!/bin/bash
+# /etc/keepalived/nfs-failover.sh {MASTER|BACKUP|FAULT}   (managed by Ansible: nfs_ha)
+#
+# MASTER: promote DRBD -> mount /dev/drbd0 -> start nfsd/export -> claim VIP alias IP via Cloud API.
+# BACKUP/FAULT: release VIP -> unexport/stop nfsd -> unmount -> demote DRBD to secondary.
+#
+# The VIP is a Hetzner private *alias IP*: Hetzner's SDN only delivers it to the server that holds it
+# in its network alias_ips, so we move it through the API (clear it from the peer, set it on self).
+set -u
+
+STATE="${1:-}"
+VIP='{{ vip }}'
+RES='{{ drbd_resource }}'
+DRBD_DEV='{{ drbd_device }}'
+MOUNT='{{ mount_point }}'
+IFACE='{{ private_iface }}'
+NET_NAME='{{ net_name }}'
+TOKEN='{{ hcloud_token }}'
+API='https://api.hetzner.cloud/v1'
+AUTH=(-H "Authorization: Bearer ${TOKEN}" -H "Content-Type: application/json")
+SELF_NAME="$(hostname)"
+log() { logger -t nfs-failover "$*"; echo "$(date '+%F %T') $*"; }
+
+api_get()  { curl -fsS --retry 3 "${AUTH[@]}" "$API/$1"; }
+api_post() { curl -fsS --retry 3 "${AUTH[@]}" -X POST "$API/$1" -d "$2"; }
+
+NET_ID="$(api_get "networks?name=$NET_NAME" | jq -r '.networks[0].id')"
+SELF_ID="$(api_get "servers?name=$SELF_NAME" | jq -r '.servers[0].id')"
+
+claim_vip() {
+    [ -z "$NET_ID" ] && { log "ERROR: no network $NET_NAME"; return 1; }
+    # Remove the VIP from every other nfs-role server that still advertises it (works even if the
+    # peer VM is down — this is a control-plane call), then set it on ourselves.
+    for sid in $(api_get "servers?label_selector=role=nfs" | jq -r '.servers[].id'); do
+        [ "$sid" = "$SELF_ID" ] && continue
+        has="$(api_get "servers/$sid" | jq -r --argjson n "$NET_ID" \
+              '[.server.private_net[] | select(.network==$n) | .alias_ips[]] | index("'"$VIP"'")')"
+        if [ "$has" != "null" ]; then
+            api_post "servers/$sid/actions/change_alias_ips" "{\"network\":$NET_ID,\"alias_ips\":[]}" \
+                >/dev/null && log "cleared VIP from server $sid"
+        fi
+    done
+    for i in $(seq 1 10); do
+        if api_post "servers/$SELF_ID/actions/change_alias_ips" \
+            "{\"network\":$NET_ID,\"alias_ips\":[\"$VIP\"]}" >/dev/null; then
+            log "claimed VIP $VIP on $SELF_NAME"; break
+        fi
+        log "claim attempt $i failed, retrying"; sleep 3
+    done
+    ip addr replace "$VIP/32" dev "$IFACE" || true
+}
+
+release_vip() { ip addr del "$VIP/32" dev "$IFACE" 2>/dev/null || true; }
+
+case "$STATE" in
+    MASTER)
+        log "transition -> MASTER"
+        drbdadm primary "$RES" || { log "primary failed, retrying with --force"; drbdadm primary --force "$RES"; }
+        for i in $(seq 1 15); do [ -b "$DRBD_DEV" ] && break; sleep 1; done
+        mountpoint -q "$MOUNT" || mount "$DRBD_DEV" "$MOUNT"
+        systemctl start nfs-kernel-server
+        exportfs -ra
+        claim_vip
+        log "MASTER ready (mounted=$(mountpoint -q "$MOUNT" && echo yes || echo no))"
+        ;;
+    BACKUP|FAULT)
+        log "transition -> $STATE"
+        release_vip
+        exportfs -ua || true
+        systemctl stop nfs-kernel-server || true
+        umount "$MOUNT" 2>/dev/null || umount -l "$MOUNT" 2>/dev/null || true
+        drbdadm secondary "$RES" || true
+        log "$STATE done"
+        ;;
+    *)
+        log "unknown state '$STATE'"; exit 1
+        ;;
+esac

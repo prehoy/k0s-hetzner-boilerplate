@@ -1,0 +1,39 @@
+# Node reservations (anti-wedge) — installs a kubelet --kube-reserved/--system-reserved/--eviction-hard
+# systemd drop-in so app load can never starve kubelet/system and wedge a node. Mirrors staging; prod's
+# controller ExecStart carries `--no-taints=true` (managers are schedulable) so base_exec includes it.
+# The drop-in fully replaces ExecStart, so it also carries `--disable-components=konnectivity-server`
+# (extra_args) — keeping konnectivity disabled regardless of the base unit. See
+# docs/RUNBOOK-node-reservations-pdbs.md + RUNBOOK-konnectivity-direct-egress.md.
+- name: Node reservations — k0s workers
+  hosts: k0s_workers
+  become: true
+  serial: 1
+  gather_facts: true
+  vars:
+    svc: k0sworker
+    base_exec: "/usr/local/bin/k0s worker --token-file=/tmp/k0s-worker.token"
+    kubelet_args: "--kube-reserved=cpu=100m,memory=256Mi,ephemeral-storage=2Gi --system-reserved=cpu=100m,memory=512Mi,ephemeral-storage=1Gi --eviction-hard=memory.available<300Mi,nodefs.available<10%,imagefs.available<10%"
+    internal_ip: "{{ ansible_enp7s0.ipv4.address }}"
+  tasks:
+    - import_tasks: tasks/apply_reservations.yml
+
+- name: Node reservations — k0s controllers (managers run an embedded worker via --enable-worker)
+  hosts: k0s_controllers
+  become: true
+  serial: 1
+  gather_facts: true
+  vars:
+    svc: k0scontroller
+    base_exec: "/usr/local/bin/k0s controller --config=/etc/k0s/k0s.yaml --enable-worker=true --no-taints=true"
+    kubelet_args: "--kube-reserved=cpu=100m,memory=256Mi,ephemeral-storage=2Gi --system-reserved=cpu=100m,memory=512Mi,ephemeral-storage=1Gi --eviction-hard=memory.available<300Mi,nodefs.available<10%,imagefs.available<10%"
+    extra_args: "--disable-components=konnectivity-server"
+    internal_ip: "{{ ansible_enp7s0.ipv4.address }}"
+  tasks:
+    # The reservations drop-in now carries --disable-components, so the ad-hoc konnectivity drop-in
+    # (added live during the konnectivity-direct migration) is redundant — remove it for a single
+    # source of truth (matches staging's single-drop-in model). No-op on fresh builds.
+    - name: Remove redundant ad-hoc konnectivity drop-in
+      file:
+        path: /etc/systemd/system/k0scontroller.service.d/10-konnectivity-direct.conf
+        state: absent
+    - import_tasks: tasks/apply_reservations.yml

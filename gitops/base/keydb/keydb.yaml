@@ -1,0 +1,95 @@
+# KeyDB — multithreaded Redis-compatible cache/queue store, shared by the migrated apps.
+# Apps connect at keydb.data:6379 with KEYDB_PASSWORD. NFS-persisted (AOF) so job queues survive
+# restarts.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: data
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: keydb-data
+spec:
+  capacity: { storage: 5Gi }
+  accessModes: [ReadWriteOnce]
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: ""
+  nfs: { server: 10.0.0.199, path: /mnt/nfs/keydb }   # HA VIP (floats between nfs-0/nfs-1)
+  claimRef: { namespace: data, name: keydb-data }
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: keydb-data
+  namespace: data
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: ""
+  volumeName: keydb-data
+  resources: { requests: { storage: 5Gi } }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: keydb
+  namespace: data
+spec:
+  # CUTOVER 2026-06-19: keydb.data now fronts the HA stack (keydb-ha HAProxy -> Sentinel-elected
+  # master), not the single keydb Deployment below. The Deployment is kept (idle) for soak/rollback;
+  # revert this selector to { app: keydb } to roll back. See docs/RUNBOOK-keydb-ha.md.
+  selector: { app: keydb-ha-haproxy }
+  ports:
+    - { name: redis, port: 6379, targetPort: 6379 }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: keydb
+  namespace: data
+spec:
+  replicas: 0   # DECOMMISSIONED 2026-06-20 — migrated to keydb-ha (Sentinel+HAProxy). Service above now
+                # fronts HAProxy. Kept at 0 (not deleted) for a short soak/rollback; remove after. See
+                # docs/RUNBOOK-keydb-ha.md. Rollback = replicas 1 + revert the keydb Service selector.
+  strategy: { type: Recreate }          # single RWO NFS volume
+  selector: { matchLabels: { app: keydb } }
+  template:
+    metadata:
+      labels: { app: keydb }
+    spec:
+      affinity:                       # off the 4GB control-plane nodes (NFS-backed PVC moves freely)
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - { key: node-role.kubernetes.io/control-plane, operator: DoesNotExist }
+      containers:
+        - name: keydb
+          image: eqalpha/keydb:x86_64_v6.3.4
+          command: ["keydb-server"]
+          args:
+            - "--requirepass"
+            - "$(KEYDB_PASSWORD)"
+            - "--appendonly"
+            - "yes"
+            - "--server-threads"
+            - "2"
+            - "--dir"
+            - "/data"
+          env:
+            - name: KEYDB_PASSWORD
+              valueFrom: { secretKeyRef: { name: keydb-secret, key: KEYDB_PASSWORD } }
+          ports:
+            - { containerPort: 6379 }
+          volumeMounts:
+            - { name: data, mountPath: /data }
+          readinessProbe:
+            exec: { command: ["sh","-c","keydb-cli -a \"$KEYDB_PASSWORD\" ping | grep -q PONG"] }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests: { cpu: "100m", memory: "128Mi" }
+            limits: { cpu: "500m", memory: "512Mi" }
+      volumes:
+        - name: data
+          persistentVolumeClaim: { claimName: keydb-data }

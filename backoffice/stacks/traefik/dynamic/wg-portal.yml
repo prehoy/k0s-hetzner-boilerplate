@@ -1,0 +1,20 @@
+# Traefik file-provider route for wg-portal.
+# wg-portal is a Swarm service on the host network (so it can manage the kernel wg0); being
+# host-networked it can't also sit on the traefik-public overlay, so Traefik can't discover it
+# via swarm labels. We reach it from the overlay-attached Traefik via the docker_gwbridge gateway
+# (172.18.0.1 = the host), where wg-portal listens on :8888. Public :8888 is blocked by the
+# backoffice UFW default-deny; TLS terminates here at Traefik (le resolver).
+http:
+  routers:
+    wg-portal:
+      rule: "Host(`vpn.bo.example.com`)"
+      entrypoints:
+        - websecure
+      service: wg-portal
+      tls:
+        certresolver: le
+  services:
+    wg-portal:
+      loadBalancer:
+        servers:
+          - url: "http://172.18.0.1:8888"

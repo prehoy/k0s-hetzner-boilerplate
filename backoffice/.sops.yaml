@@ -1,0 +1,3 @@
+creation_rules:
+  - path_regex: backoffice/.*
+    age: age1YOUR_PUBLIC_AGE_RECIPIENT_REPLACE_ME

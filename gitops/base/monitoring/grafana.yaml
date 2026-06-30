@@ -1,0 +1,57 @@
+# Grafana — stateless (datasource + dashboards provisioned from ConfigMaps; no DB to persist).
+# Admin password from the grafana-secrets SealedSecret. UI at grafana.example.com (see ingressroute.yaml).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grafana
+  namespace: monitoring
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: grafana }
+  template:
+    metadata:
+      labels: { app: grafana }
+    spec:
+      affinity:                       # keep off the ephemeral burst pool (would pin it, blocking scale-down)
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - { key: node-pool, operator: NotIn, values: ["burst"] }
+      securityContext: { fsGroup: 472, runAsUser: 472, runAsNonRoot: true }
+      containers:
+        - name: grafana
+          image: grafana/grafana:11.4.0
+          env:
+            - name: GF_SECURITY_ADMIN_PASSWORD
+              valueFrom: { secretKeyRef: { name: grafana-secrets, key: admin-password } }
+            # read-only Postgres password for the Translators dashboard datasources (interpolated into datasources.yaml)
+            - name: GF_PG_RO_PASSWORD
+              valueFrom: { secretKeyRef: { name: grafana-pg-datasource, key: password } }
+            - { name: GF_SERVER_ROOT_URL, value: "https://grafana.example.com" }
+            - { name: GF_USERS_ALLOW_SIGN_UP, value: "false" }
+          ports: [{ name: web, containerPort: 3000 }]
+          volumeMounts:
+            - { name: datasources, mountPath: /etc/grafana/provisioning/datasources }
+            - { name: dashboard-provider, mountPath: /etc/grafana/provisioning/dashboards }
+            - { name: dashboards, mountPath: /var/lib/grafana/dashboards }
+          readinessProbe:
+            httpGet: { path: /api/health, port: web }
+            initialDelaySeconds: 10
+          resources:
+            requests: { cpu: "50m", memory: "128Mi" }
+            limits: { cpu: "500m", memory: "512Mi" }
+      volumes:
+        - { name: datasources, configMap: { name: grafana-datasources } }
+        - { name: dashboard-provider, configMap: { name: grafana-dashboard-provider } }
+        - { name: dashboards, configMap: { name: grafana-dashboards } }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: grafana
+  namespace: monitoring
+spec:
+  selector: { app: grafana }
+  ports: [{ name: web, port: 3000, targetPort: web }]

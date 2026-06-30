@@ -1,0 +1,17 @@
+# ClickHouse memory-bounding overlay (mounted at /etc/clickhouse-server/config.d/low-mem.xml).
+# The nodes are tiny (~2.75 GiB) and CH is capped at max_server_memory_usage=1.8 GiB (90% of its
+# 2Gi limit). The stock 5 GiB mark cache let background work + dashboard queries sit near the cap,
+# so the OvercommitTracker killed small INSERTs (error 241) and log ingestion stalled.
+# Only server-level cache caps belong here; per-query limits live in the users.d <profiles> overlay.
+# (2026-06-16 incident: no new logs landing in HyperDX.)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: clickhouse-mem
+  namespace: observability
+data:
+  low-mem.xml: |
+    <clickhouse>
+      <mark_cache_size>1073741824</mark_cache_size>         <!-- 1 GiB (dedicated cpx31 node) -->
+      <uncompressed_cache_size>268435456</uncompressed_cache_size>  <!-- 256 MiB -->
+    </clickhouse>

@@ -1,0 +1,16 @@
+# Dynamic PVC provisioning on PROD's own HA NFS export (10.0.0.199:/mnt/nfs — DRBD pair
+# nfs-0/nfs-1). Prod shipped with no StorageClass (all PVs hand-made static); this adds a
+# dynamic `nfs-client` class so the Woodpecker k8s backend can create its per-pipeline
+# workspace PVC. Same setup as staging but on PROD's NFS — no cross-cluster dependency.
+nfs:
+  server: 10.0.0.199         # prod HA VIP (floats between nfs-0/nfs-1)
+  path: /mnt/nfs
+
+storageClass:
+  name: nfs-client
+  # NOT the cluster default: prod's existing static PVs use storageClassName:"" and must
+  # stay unaffected. Consumers (Woodpecker) reference `nfs-client` by name.
+  defaultClass: false
+  # Keep the data on the share when a PVC is deleted (archive, don't nuke).
+  onDelete: retain
+  accessModes: ReadWriteMany

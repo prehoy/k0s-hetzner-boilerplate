@@ -1,0 +1,59 @@
+#cloud-config
+# Canonical k0s-worker auto-join cloud-init for Cluster-Autoscaler (hcloud) nodes.
+#
+# How it's used: __JOIN_TOKEN__ is replaced with a long-lived k0s worker token (repointed at the HA
+# VIP 10.0.0.240:6443), the file is base64-encoded and shipped as the CAS `HCLOUD_CLOUD_INIT` env via
+# the SealedSecret (it carries a bootstrap credential, so it is NOT committed with the token in it).
+# See docs/RUNBOOK-node-autoscaling.md for the render+seal step.
+#
+# These nodes are PRIVATE-ONLY (no public IP): egress is via the private network gateway 10.0.0.1
+# (NAT on the LB pair). Reservations match staging/ansible/playbooks/node_reservations (anti-wedge).
+write_files:
+  - path: /etc/systemd/network/10-enp7s0.network
+    append: true
+    content: |
+      [Match]
+      Name=enp7s0
+      [Network]
+      DHCP=yes
+      Gateway=10.0.0.1
+  - path: /etc/systemd/resolved.conf
+    append: true
+    content: |
+      [Resolve]
+      DNS=1.1.1.1 1.0.0.1
+      FallbackDNS=8.8.8.8
+  - path: /etc/k0s/join.token
+    permissions: "0600"
+    content: __JOIN_TOKEN__
+runcmd:
+  - systemctl restart systemd-networkd systemd-resolved
+  - ip route replace default via 10.0.0.1 dev enp7s0 || true
+  # Swap (2×RAM + 2 GB) — burst nodes are small (cpx11 2GB) and run overflow load, so they need a
+  # bigger safety valve than the static nodes' RAM+2GB. Without swap, memory spikes make kswapd thrash
+  # and the kubelet can flip the node NotReady (see prod/ansible/playbooks/node_swap). k0s defaults
+  # failSwapOn:false, so only system.slice swaps; pods stay NoSwap. Done before `k0s install` so the
+  # kubelet starts with swap already present. cpx11: 2×2+2 = 6 GB.
+  - |
+    if ! swapon --show=NAME --noheadings | grep -q /swapfile; then
+      ram_gb=$(awk '/MemTotal/{print int(($2+1048575)/1048576)}' /proc/meminfo)   # kB -> GB, round up
+      swap_mb=$(( (ram_gb*2 + 2) * 1024 ))
+      fallocate -l ${swap_mb}M /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile
+      grep -q '^/swapfile ' /etc/fstab || echo '/swapfile none swap sw 0 0' >> /etc/fstab
+      sysctl -w vm.swappiness=20 && echo 'vm.swappiness=20' > /etc/sysctl.d/99-swappiness.conf
+    fi
+  # NFS client — without it, NFS-backed PVs (keydb, clickhouse, hyperdx, etc.) fail to mount on this
+  # node (mount.nfs missing -> exit 32). Static nodes get this at setup; autoscaled nodes must too.
+  - DEBIAN_FRONTEND=noninteractive apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y nfs-common
+  - curl -fsSL --retry 5 --retry-delay 5 -o /usr/local/bin/k0s https://github.com/k0sproject/k0s/releases/download/v1.34.3+k0s.0/k0s-v1.34.3+k0s.0-amd64
+  - chmod +x /usr/local/bin/k0s
+  # --provider-id is REQUIRED: with no Hetzner cloud-controller-manager, nothing else sets it, and
+  # without it the cluster-autoscaler can't correlate this k8s node to its Hetzner instance — so it
+  # treats the node as an "unregistered" failed-provision and hard-deletes the VM after
+  # maxNodeProvisionTime (~15min), with no drain (endless churn; each new sole node reuses the lowest
+  # free IP 10.0.1.1). The server id comes from DMI (/sys/class/dmi/id/product_serial == hcloud id),
+  # NOT the metadata HTTP endpoint: the `systemctl restart systemd-networkd` above drops the
+  # link-local route to 169.254.169.254, so a boot-time curl there returns empty -> provider-id
+  # `hcloud://` (empty) -> the churn above. DMI needs no network and is available before networking.
+  - k0s install worker --token-file /etc/k0s/join.token "--kubelet-extra-args=--provider-id=hcloud://$(cat /sys/class/dmi/id/product_serial) --kube-reserved=cpu=60m,memory=128Mi,ephemeral-storage=1Gi --system-reserved=cpu=60m,memory=256Mi,ephemeral-storage=1Gi --eviction-hard=memory.available<200Mi,nodefs.available<10%,imagefs.available<10% --node-labels=role=worker,node-pool=burst"
+  - k0s start

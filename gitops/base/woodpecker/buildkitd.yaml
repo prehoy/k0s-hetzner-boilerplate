@@ -1,0 +1,85 @@
+# Rootless buildkit daemon — shared, long-lived.
+# Build Workflows talk to it over tcp://buildkitd:1234 via buildctl.
+#
+# Cache is a node-local emptyDir, NOT NFS: rootless layer extraction chowns files
+# to mapped (high) UIDs, which the NFS server rejects (it enforces the mapped host
+# UID's rights on the export). Cross-run caching is handled via the registry
+# buildcache instead (see workflowtemplate.yaml --import/--export-cache).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: buildkitd
+  namespace: ci-build
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels: { app: buildkitd }
+  template:
+    metadata:
+      labels: { app: buildkitd }
+      annotations:
+        # Rootless buildkit needs this relaxed — it is NOT a privileged container.
+        container.apparmor.security.beta.kubernetes.io/buildkitd: unconfined
+    spec:
+      securityContext:
+        # Make the emptyDir cache group-writable by the rootless UID.
+        fsGroup: 1000
+      # Keep the build off control-plane nodes — they're schedulable here
+      # (--enable-worker --no-taints), and a build pegging CPU there starves the
+      # apiserver. Same pattern as the other heavy workloads (clickhouse, metabase).
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: node-role.kubernetes.io/control-plane
+                    operator: DoesNotExist
+      containers:
+        - name: buildkitd
+          image: moby/buildkit:v0.18.2-rootless
+          args:
+            - --addr
+            - unix:///run/user/1000/buildkit/buildkitd.sock
+            - --addr
+            - tcp://0.0.0.0:1234
+            - --oci-worker-no-process-sandbox
+          ports:
+            - containerPort: 1234
+          readinessProbe:
+            exec:
+              command: [buildctl, debug, workers]
+            initialDelaySeconds: 5
+            periodSeconds: 30
+          securityContext:
+            runAsUser: 1000
+            runAsGroup: 1000
+            # Rootless still needs an unmasked seccomp profile for user-namespaces.
+            seccompProfile:
+              type: Unconfined
+          env:
+            - name: BUILDKITD_FLAGS
+              value: --oci-worker-no-process-sandbox
+          resources:
+            # Requests for scheduling only — NO hard memory limit: builds vary and a cgroup
+            # cap OOM-kills them mid-build. The control plane is protected by the node
+            # anti-affinity above, not by capping memory here. Needs a roomy worker (cx33+).
+            requests: { cpu: "500m", memory: 1Gi }
+          volumeMounts:
+            - name: cache
+              mountPath: /home/user/.local/share/buildkit
+      volumes:
+        - name: cache
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: buildkitd
+  namespace: ci-build
+spec:
+  selector: { app: buildkitd }
+  ports:
+    - port: 1234
+      targetPort: 1234

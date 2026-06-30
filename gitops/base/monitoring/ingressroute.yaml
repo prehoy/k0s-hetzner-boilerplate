@@ -1,0 +1,143 @@
+# Grafana UI at grafana.example.com (Traefik, letsencrypt certResolver — same pattern as hyperdx).
+# PREREQ: DNS A/CNAME grafana.example.com -> the LB. Prometheus/Alertmanager are NOT exposed (in-cluster only).
+# web(:80) -> https redirect so a typed bare domain (http://grafana.example.com) doesn't hit Traefik's 404.
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: https-redirect
+  namespace: monitoring
+spec:
+  redirectScheme:
+    scheme: https
+    permanent: true
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: grafana
+  namespace: monitoring
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - kind: Rule
+      match: Host(`grafana.example.com`)
+      services:
+        - name: grafana
+          port: 3000
+  tls:
+    certResolver: letsencrypt
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: grafana-http-redirect
+  namespace: monitoring
+spec:
+  entryPoints:
+    - web
+  routes:
+    - kind: Rule
+      match: Host(`grafana.example.com`)
+      middlewares:
+        - name: https-redirect
+      services:
+        - name: grafana
+          port: 3000
+---
+# Alertmanager at alertmanager.example.com — basic-auth gated (no built-in auth). Makes the silence
+# links in notifications reachable. PREREQ: DNS alertmanager.example.com -> LB.
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: alertmanager
+  namespace: monitoring
+spec:
+  entryPoints: [websecure]
+  routes:
+    - kind: Rule
+      match: Host(`alertmanager.example.com`)
+      middlewares:
+        - name: monitoring-auth
+      services:
+        - name: alertmanager
+          port: 9093
+  tls:
+    certResolver: letsencrypt
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: alertmanager-http-redirect
+  namespace: monitoring
+spec:
+  entryPoints: [web]
+  routes:
+    - kind: Rule
+      match: Host(`alertmanager.example.com`)
+      middlewares:
+        - name: https-redirect
+      services:
+        - name: alertmanager
+          port: 9093
+---
+# Prometheus at prometheus.example.com — basic-auth gated. Makes alert "Source" (generatorURL) links
+# reachable. PREREQ: DNS prometheus.example.com -> LB.
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: prometheus
+  namespace: monitoring
+spec:
+  entryPoints: [websecure]
+  routes:
+    - kind: Rule
+      match: Host(`prometheus.example.com`)
+      middlewares:
+        - name: monitoring-auth
+      services:
+        - name: prometheus
+          port: 9090
+  tls:
+    certResolver: letsencrypt
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: prometheus-http-redirect
+  namespace: monitoring
+spec:
+  entryPoints: [web]
+  routes:
+    - kind: Rule
+      match: Host(`prometheus.example.com`)
+      middlewares:
+        - name: https-redirect
+      services:
+        - name: prometheus
+          port: 9090
+---
+# Unauthenticated /-/healthy routes (Host+Path is more specific than the auth-gated Host-only rule,
+# so Traefik prefers it). Lets the INDEPENDENT Gatus (staging cluster) probe prod monitoring as a
+# dead-man's-switch — if worker-3/Prometheus or both Alertmanager replicas die, the health URL returns
+# 502/timeout and Gatus pages via its own Pushover. /-/healthy leaks nothing ("Healthy" string only).
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: monitoring-health
+  namespace: monitoring
+spec:
+  entryPoints: [websecure]
+  routes:
+    - kind: Rule
+      match: Host(`prometheus.example.com`) && Path(`/-/healthy`)
+      services:
+        - name: prometheus
+          port: 9090
+    - kind: Rule
+      match: Host(`alertmanager.example.com`) && Path(`/-/healthy`)
+      services:
+        - name: alertmanager
+          port: 9093
+  tls:
+    certResolver: letsencrypt

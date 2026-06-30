@@ -1,0 +1,62 @@
+global
+maxconn 100000
+
+defaults
+    mode tcp
+    log global
+    option httplog
+    option dontlognull
+    retries 3
+    option redispatch
+    timeout connect 5000
+    timeout client 50000
+    timeout server 50000
+    option clitcpka
+    option srvtcpka
+
+listen stats
+    mode http
+    bind *:7654
+    stats enable
+    stats uri /
+
+
+frontend default_http
+    bind *:80
+    mode tcp
+
+    # other domains go to main cluster
+    default_backend main_cluster_http
+
+
+frontend default_https
+    bind *:443
+    mode tcp
+
+    default_backend main_cluster_https
+
+backend main_cluster_http
+    option tcp-check
+    server manager1 10.0.0.3:32491 check
+    server manager2 10.0.0.4:32491 check
+    server manager3 10.0.0.5:32491 check
+
+backend main_cluster_https
+    option tcp-check
+    server manager1 10.0.0.3:30647 check
+    server manager2 10.0.0.4:30647 check
+    server manager3 10.0.0.5:30647 check
+
+# ── Control plane HA (TCP passthrough; apiserver keeps its own TLS) ──
+# Reached via the keepalived-owned alias VIP 10.0.0.240 (only the master lb holds it).
+# This is the HA management endpoint for kubectl/kubeconfig. (No konnectivity frontend:
+# apiserver egress is Direct over Calico, konnectivity is disabled — see RUNBOOK-konnectivity-direct-egress.md.)
+frontend cp_apiserver
+    bind *:6443
+    mode tcp
+    default_backend cp_apiserver
+backend cp_apiserver
+    option tcp-check
+{% for h in groups['k0s_controllers'] %}
+    server cp{{ loop.index }} {{ h }}:6443 check
+{% endfor %}

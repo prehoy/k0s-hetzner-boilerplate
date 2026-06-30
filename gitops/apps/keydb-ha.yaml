@@ -1,0 +1,20 @@
+# DEFERRED — KeyDB Sentinel+HAProxy HA stack (see docs/RUNBOOK-keydb-ha.md).
+# Rename to keydb-ha.yaml ONLY after staging validation. ArgoCD is self-managed/auto-sync, so the
+# rename = immediate prod deploy. It runs ALONGSIDE the existing keydb (no traffic until cutover).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: keydb-ha
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: git@github.com:YOUR_ORG/infra.git
+    targetRevision: main
+    path: gitops/base/keydb-ha
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: data
+  syncPolicy:
+    automated: { prune: true, selfHeal: true }
+    syncOptions: [ CreateNamespace=true ]

@@ -1,0 +1,91 @@
+# Node swap — adds a swapfile sized (nominal RAM + 2 GB) to every prod instance, persistent across
+# reboots (fstab) with vm.swappiness=20 (prefer RAM; swap is a safety valve). Idempotent.
+#
+# Why: the nodes have no swap, so under memory pressure kswapd spins reclaiming page cache, load
+# spikes, and the kubelet/system gets starved → a node can flip to NotReady (this happened on
+# staging worker-2, 2026-06-21). A swapfile lets system.slice (kubelet/containerd/k0s) swap and
+# ride out spikes instead of falling over. See staging/ansible/INFRASTRUCTURE.md change log.
+#
+# Sizing: ceil(MemTotal/1024) GB + 2  → cpx11 2→4, cpx21 4→6, ccx13/cpx31 8→10, ccx23 16→18.
+#
+# k0s already sets the kubelet `failSwapOn: false` (in /run/k0s/kubelet/config.yaml), so enabling
+# swap is reboot-safe. This play asserts that on k0s nodes before turning swap on, so it can never
+# leave a node where a future kubelet restart would refuse to start. Pods stay NoSwap (default);
+# only system.slice swaps. To let pods swap too you'd add a kubelet --config-dir drop-in with
+# memorySwap.swapBehavior: LimitedSwap (deliberately not done — heavy pod-swapping hurts latency).
+#
+#   cd prod/ansible
+#   ansible-playbook playbooks/node_swap/playbook.yaml
+#
+# nfs_tiebreaker is the same physical box as backoffice, so it is excluded here to avoid two
+# parallel writers racing on the same /swapfile.
+
+- name: Add swapfile (RAM + 2 GB) to all prod nodes
+  hosts: backoffice:lb_main:k0s_controllers:k0s_workers:nfs:db
+  become: true
+  gather_facts: true
+  vars:
+    swapfile: /swapfile
+    swap_extra_gb: 2
+    swappiness: 20
+  tasks:
+    - name: Compute swap size (nominal RAM rounded up to GB, + extra)
+      set_fact:
+        swap_mb: "{{ (((ansible_memtotal_mb / 1024) | round(0, 'ceil') | int) + swap_extra_gb) * 1024 }}"
+
+    - name: (k0s nodes) require kubelet failSwapOn=false before enabling swap
+      when: inventory_hostname in (groups.get('k0s_controllers', []) + groups.get('k0s_workers', []))
+      block:
+        - name: Look for the running kubelet config
+          stat:
+            path: /run/k0s/kubelet/config.yaml
+          register: kubelet_cfg
+        - name: Assert swap is tolerated (kubelet would otherwise refuse to start on restart)
+          command: "grep -q 'failSwapOn: false' /run/k0s/kubelet/config.yaml"
+          changed_when: false
+          when: kubelet_cfg.stat.exists
+
+    - name: Current active swap devices
+      command: swapon --show=NAME --noheadings
+      register: active_swaps
+      changed_when: false
+
+    - name: Create + enable the swapfile
+      when: swapfile not in active_swaps.stdout
+      block:
+        - name: Allocate swapfile ({{ swap_mb }} MB)
+          command: "fallocate -l {{ swap_mb }}M {{ swapfile }}"
+          args:
+            creates: "{{ swapfile }}"
+        - name: Secure swapfile permissions
+          file:
+            path: "{{ swapfile }}"
+            owner: root
+            group: root
+            mode: "0600"
+        - name: Format swapfile
+          command: "mkswap {{ swapfile }}"
+        - name: Enable swap now
+          command: "swapon {{ swapfile }}"
+
+    - name: Persist swapfile in /etc/fstab
+      mount:
+        path: none
+        src: "{{ swapfile }}"
+        fstype: swap
+        opts: sw
+        dump: "0"
+        passno: "0"
+        state: present
+
+    - name: Set vm.swappiness (persistent)
+      sysctl:
+        name: vm.swappiness
+        value: "{{ swappiness }}"
+        sysctl_set: true
+        state: present
+        reload: true
+
+    - name: Report
+      debug:
+        msg: "{{ inventory_hostname }}: RAM {{ ansible_memtotal_mb }}MB → swap {{ swap_mb }}MB"

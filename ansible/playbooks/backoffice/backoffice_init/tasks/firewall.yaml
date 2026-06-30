@@ -1,0 +1,29 @@
+- name: DISABLE FIREWALL
+  command: ufw disable
+- name: RESET UFW
+  command: ufw --force reset
+- name: ADD WIREGUARD UDP
+  command: ufw allow {{ server_port }}/udp
+- name: ALLOW INTERNAL
+  command: ufw allow from 10.0.0.0/16
+- name: BLOCK INCOMING TRAFFIC
+  command: ufw default deny incoming
+- name: ALLOW OUTGOING TRAFFIC
+  command: ufw default allow outgoing
+- name: ALLOW 443
+  command: ufw allow from any to any port 443 proto tcp
+- name: ALLOW 80
+  command: ufw allow from any to any port 80 proto tcp
+- name: ALLOW SSH
+  command: ufw allow from any to any port 22 proto tcp
+- name: ALLOW FROM WIREGUARD NETWORK
+  command: ufw allow from 10.200.200.0/24
+- name: RELOAD FIREWALL
+  command: ufw reload
+- name: ENABLE ENABLE
+  command: ufw --force enable
+- name: ENSURE UFW IS ENABLED
+  service:
+    name: ufw
+    state: started
+    enabled: true

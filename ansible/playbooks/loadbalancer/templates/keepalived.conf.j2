@@ -1,0 +1,39 @@
+global_defs {
+    script_security 2
+}
+
+vrrp_script chk_haproxy {
+    script "/usr/bin/pgrep haproxy"
+    interval 2
+    weight -101
+}
+
+vrrp_instance VI_1 {
+    interface {{cloud_private_network_adapter}}
+    state {{lb_role}}
+    priority {{node_priority}}
+    advert_int 1
+
+    virtual_router_id 30
+    unicast_src_ip {{primary_IP}}
+    unicast_peer {
+        {{secondary_IP}}
+    }
+
+    authentication {
+        auth_type PASS
+        auth_pass {{keepalived_password}}
+    }
+
+    track_script {
+        chk_haproxy
+    }
+
+    virtual_ipaddress {
+        {{floating_ip}}
+    }
+
+    notify_master "/etc/keepalived/failover.sh MASTER"
+    notify_backup "/etc/keepalived/failover.sh BACKUP"
+    notify_fault  "/etc/keepalived/failover.sh BACKUP"
+}

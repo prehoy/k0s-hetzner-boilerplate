@@ -1,0 +1,67 @@
+# In-cluster Gatus -> served at status.bo.example.com (BACKEND status page). Watches the management plane
+# (swarmpit/vpn/databasus) from inside the cluster (independent of the mgmt node) + cluster infra
+# (argocd/logs). The production page (status.example.com) is the mgmt-node gatus watching the apps.
+ui:
+  title: "Status"
+  header: "Status"
+  description: "Backend & infrastructure status"
+  logo: "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxMDAgMTAwIj48Y2lyY2xlIGN4PSI1MCIgY3k9IjUwIiByPSI0OCIgZmlsbD0iI2ZmZmZmZiIvPjwvc3ZnPg=="
+  link: "https://example.com"
+storage:
+  type: memory
+alerting:
+  email:
+    from: "alerts@example.com"
+    username: "CHANGEME@smtp-provider.com"
+    password: "${SMTP_PASSWORD}"
+    host: "smtp-relay.brevo.com"
+    port: 587
+    to: "office@example.com"
+  pushover:
+    application-token: "${PUSHOVER_APP_TOKEN}"
+    user-key: "${PUSHOVER_USER_KEY}"
+    priority: 0
+    resolved-priority: 0
+x-defaults:
+  conditions: &conditions
+    - "[STATUS] == 200"
+  alerts: &alerts
+    - type: email
+      failure-threshold: 3
+      success-threshold: 2
+      send-on-resolved: true
+    - type: pushover
+      failure-threshold: 3
+      success-threshold: 2
+      send-on-resolved: true
+endpoints:
+  - name: argocd
+    group: Infra
+    url: https://argocd.example.com
+    interval: 60s
+    conditions: *conditions
+    alerts: *alerts
+  - name: logs
+    group: Infra
+    url: https://logs.example.com
+    interval: 60s
+    conditions: *conditions
+    alerts: *alerts
+  - name: swarmpit
+    group: Management
+    url: https://swarmpit.bo.example.com
+    interval: 60s
+    conditions: *conditions
+    alerts: *alerts
+  - name: vpn
+    group: Management
+    url: https://vpn.bo.example.com
+    interval: 60s
+    conditions: *conditions
+    alerts: *alerts
+  - name: databasus
+    group: Management
+    url: https://databasus.bo.example.com
+    interval: 60s
+    conditions: *conditions
+    alerts: *alerts

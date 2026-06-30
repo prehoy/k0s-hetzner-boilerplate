@@ -1,0 +1,9 @@
+[Interface]
+PrivateKey = {{ client_private_key.stdout }}
+Address = {{ client_address }}
+
+[Peer]
+PublicKey = {{ wg_pub_key.stdout }}
+Endpoint = {{ server_endpoint }}:{{ server_port }}
+AllowedIPs = 10.0.0.0/24
+PersistentKeepalive = 25

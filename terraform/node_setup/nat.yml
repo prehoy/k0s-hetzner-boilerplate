@@ -1,0 +1,21 @@
+#cloud-config
+write_files:
+  - path: /etc/networkd-dispatcher/routable.d/10-eth0-post-up
+    content: |
+      #!/bin/bash
+
+      echo 1 > /proc/sys/net/ipv4/ip_forward
+      iptables -t nat -A POSTROUTING -s '10.0.0.0/16' -o eth0 -j MASQUERADE
+    permissions: "0755"
+
+runcmd:
+  - apt update -y
+  - apt install docker.io
+  - ufw --force reset
+  - ufw default deny incoming
+  - ufw default allow outgoing
+  - ufw default allow routed
+  - ufw allow OpenSSH
+  - ufw allow from 10.0.0.0/16
+  - ufw --force enable
+  - reboot

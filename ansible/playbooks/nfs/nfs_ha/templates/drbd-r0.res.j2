@@ -1,0 +1,40 @@
+# Managed by Ansible (nfs_ha). DRBD9 synchronous (protocol C) replication across a 3-member cluster:
+# two disk-ful NFS nodes (nfs-0, nfs-1) + one diskless quorum tiebreaker (backoffice). The filesystem
+# lives on /dev/drbd0 and is mounted only on the keepalived MASTER. Rendered identically on every
+# member (node-ids are stable from inventory order).
+resource {{ drbd_resource }} {
+  protocol C;
+  device {{ drbd_device }};
+
+  options {
+    # 3-vote quorum: a node that can't see a majority (2/3) suspends I/O rather than diverging, so a
+    # network partition can't cause split-brain. The tiebreaker is the deciding vote.
+    quorum majority;
+    on-no-quorum suspend-io;
+  }
+
+  net {
+    # Belt-and-braces: never auto-discard data on a split-brain; resolution is always manual.
+    after-sb-0pri discard-zero-changes;
+    after-sb-1pri discard-secondary;
+    after-sb-2pri disconnect;
+  }
+
+{% for h in groups['nfs_cluster'] %}
+  on {{ hostvars[h].hostname }} {
+{% if hostvars[h].drbd_diskless | default(false) | bool %}
+    disk none;
+{% else %}
+    disk /dev/disk/by-id/scsi-0HC_Volume_{{ hostvars[h].drbd_volume_id }};
+    meta-disk internal;
+{% endif %}
+    address {{ h }}:{{ drbd_port }};
+    node-id {{ loop.index0 }};
+  }
+{% endfor %}
+
+  # 3+ nodes need an explicit full mesh so every member connects to every other (required for quorum).
+  connection-mesh {
+    hosts{% for h in groups['nfs_cluster'] %} {{ hostvars[h].hostname }}{% endfor %};
+  }
+}

@@ -1,0 +1,17 @@
+# wg-portal v2 config — STRUCTURE REFERENCE ONLY.
+# The real file is committed encrypted as config.yaml.sops (it holds the admin password +
+# session/csrf secrets). The reconciler SOPS-decrypts it to config.yaml, which the wg-portal
+# Swarm service bind-mounts to /app/config/config.yaml. Do NOT commit a plaintext config.yaml.
+core:
+  # import the already-running host wg0 (and its peers) on first start; keep it up
+  import_existing: true
+  restore_state: true
+  admin_user: admin@example.com
+  admin_password: CHANGE_ME            # secret -> only in config.yaml.sops
+web:
+  listening_address: :8888             # host-network: reachable on all host IPs
+  external_url: https://vpn.bo.example.com
+  session_secret: CHANGE_ME            # secret
+  csrf_secret: CHANGE_ME               # secret
+database:
+  dsn: /app/data/sqlite.db             # persisted on host at /var/lib/wg-portal/sqlite.db

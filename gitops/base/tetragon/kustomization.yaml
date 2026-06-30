@@ -1,0 +1,8 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+# namespace is already baked into tetragon.gen.yaml (helm template -n tetragon), so we do NOT set a
+# global `namespace:` here — that would wrongly stamp metadata.namespace onto the ClusterRoleBindings.
+# tetragon.gen.yaml is the Helm chart rendered to static manifests (see its header + values.yaml).
+# CRDs (TracingPolicy) are NOT here — the tetragon-operator installs them at runtime.
+resources:
+  - tetragon.gen.yaml

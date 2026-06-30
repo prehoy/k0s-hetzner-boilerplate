@@ -1,0 +1,89 @@
+# ClickHouse — the columnar store for logs/traces/metrics. Single replica (size-to-fit), NFS PVC.
+apiVersion: v1
+kind: Service
+metadata:
+  name: clickhouse
+  namespace: observability
+spec:
+  clusterIP: None          # headless: serviceName for the StatefulSet + stable DNS
+  selector:
+    app: clickhouse
+  ports:
+    - { name: http, port: 8123, targetPort: 8123 }
+    - { name: native, port: 9000, targetPort: 9000 }
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: clickhouse
+  namespace: observability
+spec:
+  serviceName: clickhouse
+  replicas: 1
+  selector:
+    matchLabels:
+      app: clickhouse
+  template:
+    metadata:
+      labels:
+        app: clickhouse
+    spec:
+      # Pin ClickHouse to permanent (TF-provisioned) workers only: node-pool=static. This keeps it
+      # off autoscaled cas-pool nodes, which the cluster-autoscaler culls (~15min) and which thereby
+      # hard-kill the pod. Also excludes control-plane (memory-overcommitted, runs etcd/apiserver).
+      # Pinned to the dedicated observability node (worker-3, cpx31). node-pool=observability +
+      # tolerate its taint so only the observability big guns (ClickHouse/Mongo/otel) land there.
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: node-pool
+                    operator: In
+                    values: ["observability"]
+      tolerations:
+        - { key: dedicated, operator: Equal, value: observability, effect: NoSchedule }
+      securityContext:
+        fsGroup: 101         # clickhouse uid/gid in the alpine image
+      containers:
+        - name: clickhouse
+          image: clickhouse/clickhouse-server:25.7-alpine
+          # NOTE: use non-CLICKHOUSE_* names — the official image's entrypoint treats
+          # CLICKHOUSE_PASSWORD as the *default* user's password and writes users.d/default-user.xml
+          # (which collides with our read-only overlay). These feed users.xml via from_env.
+          env:
+            - name: CH_APP_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: hyperdx-secrets, key: CLICKHOUSE_APP_PASSWORD }
+            - name: CH_OTEL_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: hyperdx-secrets, key: CLICKHOUSE_PASSWORD }
+          ports:
+            - { name: http, containerPort: 8123 }
+            - { name: native, containerPort: 9000 }
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/clickhouse }
+            # subPath: mount only our file so the rest of users.d stays writable for the entrypoint
+            - { name: users, mountPath: /etc/clickhouse-server/users.d/hyperdx-users.xml, subPath: hyperdx-users.xml }
+            - { name: mem, mountPath: /etc/clickhouse-server/config.d/low-mem.xml, subPath: low-mem.xml }
+          readinessProbe:
+            httpGet: { path: /ping, port: 8123 }
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /ping, port: 8123 }
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          resources:
+            requests: { cpu: "500m", memory: "2Gi" }
+            limits: { cpu: "3", memory: "6Gi" }   # cpx31 (8GB) — CH auto-caps server mem ~90% (5.4GB); raised 5->6Gi 2026-06-19 so merges on otel_logs stop OOMing (err 241)
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: clickhouse-data
+        - name: users
+          configMap:
+            name: clickhouse-users
+        - name: mem
+          configMap:
+            name: clickhouse-mem

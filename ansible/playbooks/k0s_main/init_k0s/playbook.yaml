@@ -1,0 +1,101 @@
+- name: Install k0s on lead manager
+  hosts: k0s_controllers[0]
+  become: true
+  gather_facts: true
+  vars:
+    internal_ip: "{{ ansible_enp7s0.ipv4.address }}"
+  tasks:
+    - name: Update package lists and upgrade
+      apt:
+        update_cache: true
+        upgrade: true
+    - name: Check if k0s is installed
+      stat:
+        path: /usr/local/bin/k0s
+      register: k0s
+
+    # k0s already installed
+    - name: Print if k0s is installed or not
+      debug:
+        msg: "k0s is installed"
+      when: k0s.stat.exists
+      # if k0s is installed, only reset - block:
+    - name: Stop k0s service if running
+      command: k0s stop
+      when: k0s.stat.exists
+      failed_when: false
+      ignore_errors: true
+    - name: Reset k0s configuration
+      command: k0s reset
+      when: k0s.stat.exists
+
+    # k0s not installed
+    - name: Print that k0s is NOT installed
+      debug:
+        msg: "k0s is NOT installed"
+      when: not k0s.stat.exists
+
+      # MANUAL DOWNLOAD NEEDED DUE TO AUTO INSTALL BUG
+    - name: Install k0s
+      command: wget https://github.com/k0sproject/k0s/releases/download/v1.34.3+k0s.0/k0s-v1.34.3+k0s.0-amd64
+      when: not k0s.stat.exists
+
+    - name: Make k0s executable
+      command: chmod +x k0s-v1.34.3+k0s.0-amd64
+      when: not k0s.stat.exists
+
+    - name: Move k0s to /usr/local/bin
+      command: mv k0s-v1.34.3+k0s.0-amd64 /usr/local/bin/k0s
+      when: not k0s.stat.exists
+
+    - name: Create directory for k0s configuration
+      file:
+        path: /etc/k0s
+        state: directory
+        owner: root
+        group: root
+        mode: 0755
+
+    - name: Create configuration file
+      run_once: true
+      template:
+        src: ./templates/k0s.yaml.j2
+        dest: /etc/k0s/k0s.yaml
+        owner: root
+        group: root
+        mode: 0644
+
+    # Direct apiserver egress (referenced by spec.api.extraArgs) — must exist before the apiserver
+    # starts. See docs/RUNBOOK-konnectivity-direct-egress.md.
+    - name: Ship direct egress-selector config
+      copy:
+        dest: /etc/k0s/egress-direct.yaml
+        owner: root
+        group: root
+        mode: 0644
+        content: |
+          apiVersion: apiserver.k8s.io/v1beta1
+          kind: EgressSelectorConfiguration
+          egressSelections:
+          - name: cluster
+            connection:
+              proxyProtocol: Direct
+
+    - name: Install k0s controller
+      # --disable-components=konnectivity-server: egress is Direct (above), konnectivity is dead weight.
+      command: k0s install controller --enable-worker --no-taints --disable-components=konnectivity-server --config /etc/k0s/k0s.yaml
+
+    - name: Start k0s
+      command: k0s start
+
+    - name: Wait for k0s to start
+      wait_for:
+        port: 6443
+        host: "{{ internal_ip }}"
+        timeout: 600
+
+    - name: Save kubeconfig to current machine
+      fetch:
+        src: /var/lib/k0s/pki/admin.conf
+        dest: ../../main_kubeconfig.conf
+        flat: yes

@@ -1,0 +1,34 @@
+# DEFERRED — ArgoCD self-management. Do NOT enable during the GitOps cutover.
+# Rename to argocd.yaml (so the root app-of-apps picks it up) only in Phase 4, AFTER
+# all prod apps are on Sealed Secrets and KSOPS is stripped from the repo-server.
+# Self-managing ArgoCD restarts its own components — do it last, in the window.
+#
+# Keep the chart version in sync with gitops/bootstrap/bootstrap.sh (9.4.15).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: argocd
+  namespace: argocd
+spec:
+  project: default
+  # Multi-source: Helm chart from argo-helm, values from this git repo.
+  sources:
+    - repoURL: https://argoproj.github.io/argo-helm
+      chart: argo-cd
+      targetRevision: 9.4.15
+      helm:
+        releaseName: argocd
+        valueFiles:
+          - $values/gitops/base/argocd/values.yaml
+    - repoURL: git@github.com:YOUR_ORG/infra.git
+      targetRevision: main
+      ref: values
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true

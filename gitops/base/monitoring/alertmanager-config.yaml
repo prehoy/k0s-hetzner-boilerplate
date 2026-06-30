@@ -1,0 +1,54 @@
+# Alertmanager routing: severity-based. critical -> Slack + email (Brevo) + Pushover (phone);
+# everything else (warning/info — node churn, slow apps, the BurstNodeActive heads-up) -> Slack only.
+# All credentials are *_file paths (mounted from the alertmanager-secrets SealedSecret) — no secret
+# lives in this ConfigMap. Brevo SMTP host/user/from are non-secret. Same creds Gatus uses.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: alertmanager-config
+  namespace: monitoring
+data:
+  alertmanager.yml: |
+    global:
+      resolve_timeout: 5m
+      smtp_smarthost: "smtp-relay.brevo.com:587"
+      smtp_from: "alerts@example.com"
+      smtp_auth_username: "CHANGEME@smtp-provider.com"
+      smtp_auth_password_file: /etc/alertmanager/secrets/smtp_password
+
+    route:
+      # Default: Slack only (no phone). warning/info — incl. TargetDown from node churn and the
+      # BurstNodeActive heads-up — land here and never page. Only severity=critical escalates.
+      receiver: notify
+      group_by: [alertname, namespace]
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 4h
+      routes:
+        - matchers: ['severity = "critical"']
+          receiver: crit
+
+    receivers:
+      # Slack-only — non-paging stream for warnings/info (node add/remove, slow apps, etc.)
+      - name: notify
+        slack_configs:
+          - &slack
+            api_url_file: /etc/alertmanager/secrets/slack_url
+            channel: "#alerts"                   # webhook is channel-bound; this is cosmetic
+            send_resolved: true
+            title: '{{ .Status | toUpper }}: {{ .CommonLabels.alertname }}'
+            text: >-
+              {{ range .Alerts }}• {{ .Annotations.summary }}
+              {{ end }}
+      # Critical — Slack + email + Pushover (phone). Reserved for real outages.
+      - name: crit
+        slack_configs: [*slack]
+        email_configs:
+          - to: "office@example.com"
+            send_resolved: true
+        pushover_configs:
+          - token_file: /etc/alertmanager/secrets/pushover_token
+            user_key_file: /etc/alertmanager/secrets/pushover_user_key
+            send_resolved: true
+            title: '{{ .Status | toUpper }}: {{ .CommonLabels.alertname }}'
+            message: '{{ range .Alerts }}{{ .Annotations.summary }}{{ end }}'

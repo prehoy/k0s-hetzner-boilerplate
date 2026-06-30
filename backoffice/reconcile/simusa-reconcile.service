@@ -1,0 +1,11 @@
+[Unit]
+Description=backoffice Swarm GitOps reconcile (pull-based)
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/simusa-reconcile.sh
+# don't let a transient git/registry hiccup mark it failed forever
+TimeoutStartSec=300

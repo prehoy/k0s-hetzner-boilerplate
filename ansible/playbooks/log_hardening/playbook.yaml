@@ -1,0 +1,114 @@
+# Log hardening — caps /var/log growth so a log flood can never fill the root disk and wedge a node.
+#
+# WHY THIS EXISTS: on 2026-06-14 two k0s controllers (k0s-manager-1/2) filled their 38G root disk
+# with a ~27G /var/log/syslog.1 (a crash-looping etcd + chatty konnectivity flooding rsyslog).
+# A full disk made etcd unable to write/repair its WAL -> etcd lost quorum -> the kube-apiserver
+# hung on every call (`/healthz` -> `etcd failed`). Truncating syslog freed space and etcd
+# self-recovered. This playbook prevents a recurrence (and is the recipe to apply on prod too).
+#
+# WHAT IT DOES (idempotent):
+#   1. Size-caps rsyslog files (maxsize) + compress + keep N rotations.
+#   2. Runs logrotate hourly (timer override) so the size cap is enforced promptly, not just daily.
+#   3. Hard-caps the systemd journal (SystemMaxUse) and rate-limits it.
+#
+# RUN:  ansible-playbook -i inventory playbooks/log_hardening/playbook.yaml
+- name: Harden host logging (size caps so /var/log cannot fill the disk)
+  hosts: all
+  become: true
+  vars:
+    logrotate_maxsize: 200M     # rotate any rsyslog file once it exceeds this
+    logrotate_rotate: 7         # keep this many (compressed) rotations
+    journald_max_use: 500M      # hard cap on persistent journal
+    journald_runtime_max_use: 200M
+    journald_ratelimit_interval: 30s
+    journald_ratelimit_burst: 10000
+  tasks:
+    - name: Install logrotate
+      apt:
+        name: logrotate
+        state: present
+        update_cache: true
+
+    - name: Deploy hardened rsyslog logrotate config (size-capped)
+      template:
+        src: templates/logrotate-rsyslog.j2
+        dest: /etc/logrotate.d/rsyslog
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Validate logrotate config parses
+      command: logrotate -d /etc/logrotate.d/rsyslog
+      changed_when: false
+
+    - name: Check whether systemd logrotate.timer exists
+      stat:
+        path: /lib/systemd/system/logrotate.timer
+      register: logrotate_timer
+
+    - name: Make logrotate run hourly (systemd timer override)
+      when: logrotate_timer.stat.exists
+      block:
+        - name: Ensure logrotate.timer override dir
+          file:
+            path: /etc/systemd/system/logrotate.timer.d
+            state: directory
+            mode: "0755"
+        - name: Deploy hourly override
+          template:
+            src: templates/logrotate-hourly.conf.j2
+            dest: /etc/systemd/system/logrotate.timer.d/hourly.conf
+            mode: "0644"
+          notify: reload systemd
+        - name: Enable + start logrotate.timer
+          systemd:
+            name: logrotate.timer
+            enabled: true
+            state: started
+            daemon_reload: true
+
+    - name: Fallback — hourly logrotate via cron if no systemd timer
+      when: not logrotate_timer.stat.exists
+      copy:
+        dest: /etc/cron.hourly/logrotate
+        mode: "0755"
+        content: |
+          #!/bin/sh
+          # Managed by Ansible (log_hardening). Hourly logrotate to enforce maxsize caps.
+          test -x /usr/sbin/logrotate && /usr/sbin/logrotate /etc/logrotate.conf
+
+    - name: Cap + rate-limit the systemd journal
+      block:
+        - name: Ensure journald drop-in dir
+          file:
+            path: /etc/systemd/journald.conf.d
+            state: directory
+            mode: "0755"
+        - name: Deploy journald size/ratelimit drop-in
+          template:
+            src: templates/journald-size.conf.j2
+            dest: /etc/systemd/journald.conf.d/00-size-caps.conf
+            mode: "0644"
+          notify: restart journald
+
+    # One-off cleanup so the cap takes effect immediately on already-bloated nodes
+    - name: Vacuum journal down to the cap now
+      command: journalctl --vacuum-size={{ journald_max_use }}
+      changed_when: false
+
+    - name: Force an immediate logrotate run so oversized files are rotated now
+      command: logrotate --force /etc/logrotate.d/rsyslog
+      register: lr_force
+      changed_when: false
+      # tolerate a race with a concurrent logrotate (hourly/daily timer) — the lock means it's
+      # already rotating; nothing to do.
+      failed_when: lr_force.rc != 0 and 'already locked' not in lr_force.stderr
+
+  handlers:
+    - name: reload systemd
+      systemd:
+        daemon_reload: true
+    - name: restart journald
+      systemd:
+        name: systemd-journald
+        state: restarted

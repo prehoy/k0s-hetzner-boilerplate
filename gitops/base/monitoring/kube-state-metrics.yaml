@@ -1,0 +1,47 @@
+# kube-state-metrics — exposes k8s object state as metrics (deployment replicas, pod phase/restarts,
+# resource requests/limits, ...). The "per-app health" half; cAdvisor is the "per-app usage" half.
+# RBAC (SA + ClusterRole) is in rbac.yaml. Scraped by Prometheus via the static kube-state-metrics:8080.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kube-state-metrics
+  namespace: monitoring
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: kube-state-metrics }
+  template:
+    metadata:
+      labels: { app: kube-state-metrics }
+    spec:
+      # Off the control-plane nodes (app load made the 4GB managers OOM-flap). Stateless, so free
+      # scheduling on workers is fine.
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - { key: node-role.kubernetes.io/control-plane, operator: DoesNotExist }
+                  - { key: node-pool, operator: NotIn, values: ["burst"] }   # don't pin the ephemeral burst pool
+      serviceAccountName: kube-state-metrics
+      securityContext: { runAsUser: 65534, runAsNonRoot: true }
+      containers:
+        - name: kube-state-metrics
+          image: registry.k8s.io/kube-state-metrics/kube-state-metrics:v2.14.0
+          ports:
+            - { name: metrics, containerPort: 8080 }
+          readinessProbe:
+            httpGet: { path: /healthz, port: 8080 }
+            initialDelaySeconds: 5
+          resources:
+            requests: { cpu: "20m", memory: "64Mi" }
+            limits: { cpu: "200m", memory: "256Mi" }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kube-state-metrics
+  namespace: monitoring
+spec:
+  selector: { app: kube-state-metrics }
+  ports: [{ name: metrics, port: 8080, targetPort: metrics }]

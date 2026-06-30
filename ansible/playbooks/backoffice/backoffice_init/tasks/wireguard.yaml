@@ -1,0 +1,64 @@
+- name: Install Wireguard
+  apt:
+    name: wireguard
+    state: present
+
+- name: Generate Private Wireguard Key
+  command: wg genkey
+  register: wg_key
+
+- name: Generate Public Wireguard Key
+  shell: "echo {{wg_key.stdout}} | wg pubkey"
+  register: wg_pub_key
+
+- name: Generate Client Private Key
+  command: wg genkey
+  register: client_private_key
+
+- name: Generate Client Public Key
+  shell: "echo {{client_private_key.stdout}} | wg pubkey"
+  register: client_public_key
+
+- name: Create Client Configuration File
+  template:
+    src: ../templates/client0.conf.j2
+    dest: /etc/wireguard/client.conf
+    owner: root
+    group: root
+    mode: 0600
+  vars:
+    server_port: 51820
+    client_address: "10.200.200.2/24"
+
+- name: Create Wireguard Configuration File
+  template:
+    src: ../templates/wg0.conf.j2
+    dest: /etc/wireguard/wg0.conf
+    owner: root
+    group: root
+    mode: 0600
+  vars:
+    wg_private_key: "{{wg_key.stdout}}"
+    wg_listen_port: "{{server_port}}"
+    wg_address: "10.200.200.1/24"
+    wg_client_public_key: "{{client_public_key.stdout}}"
+
+- name: Show Wireguard server configuration on remote
+  command: cat /etc/wireguard/wg0.conf
+  register: wg0_conf
+  ignore_errors: true
+
+- name: Debug Wireguard Server Configuration
+  debug:
+    msg: "Server configuration file: \n {{wg0_conf.stdout}}"
+
+- name: Enable Wireguard Service
+  service:
+    name: wg-quick@wg0
+    state: started
+    enabled: true
+
+- name: RESTART Wireguard Service
+  service:
+    name: wg-quick@wg0
+    state: restarted

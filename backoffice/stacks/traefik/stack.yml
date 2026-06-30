@@ -1,0 +1,60 @@
+# Traefik edge proxy for the backoffice management box (single-node Swarm).
+# TLS via Let's Encrypt + Cloudflare DNS-01 (token from a SOPS-encrypted Docker secret).
+version: "3.8"
+
+services:
+  traefik:
+    image: traefik:v3.6
+    ports:
+      - { target: 80, published: 80, protocol: tcp, mode: host }
+      - { target: 443, published: 443, protocol: tcp, mode: host }
+    environment:
+      CF_DNS_API_TOKEN_FILE: /run/secrets/cf_dns_api_token
+    secrets:
+      - cf_dns_api_token
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - traefik-certs:/certificates
+      # absolute path: Swarm bind mounts are resolved by dockerd, not the CLI (no relative paths)
+      - /opt/simusa-infra/backoffice/stacks/traefik/dynamic:/dynamic:ro
+    command:
+      - --providers.swarm.endpoint=unix:///var/run/docker.sock
+      - --providers.swarm.network=traefik-public
+      - --providers.swarm.exposedByDefault=false
+      # file provider: routes for host-network services (wg-portal) Swarm labels can't reach
+      - --providers.file.directory=/dynamic
+      - --providers.file.watch=true
+      - --entrypoints.web.address=:80
+      - --entrypoints.web.http.redirections.entryPoint.to=websecure
+      - --entrypoints.web.http.redirections.entryPoint.scheme=https
+      - --entrypoints.websecure.address=:443
+      - --certificatesresolvers.le.acme.email=office@example.com
+      - --certificatesresolvers.le.acme.storage=/certificates/acme.json
+      - --certificatesresolvers.le.acme.dnschallenge.provider=cloudflare
+      - --certificatesresolvers.le.acme.dnschallenge.delayBeforeCheck=10
+      - --api.dashboard=true
+      - --log.level=INFO
+      - --accesslog=true
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
+      # TODO: expose the dashboard at traefik.bo.example.com behind a real basic-auth
+      # hash (htpasswd -nbB admin '<pw>', SOPS-managed) in a follow-up.
+    networks:
+      - traefik-public
+
+secrets:
+  cf_dns_api_token:
+    # committed encrypted as cf_dns_api_token.sops; reconciler decrypts it to this file.
+    file: ./cf_dns_api_token
+
+networks:
+  # shared edge network, created/owned by the reconciler (external to every stack)
+  traefik-public:
+    external: true
+
+volumes:
+  traefik-certs:

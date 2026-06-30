@@ -1,0 +1,194 @@
+- name: Configure Load Balancer
+  hosts: lb_main
+  become: true
+  vars:
+    floating_ip: 203.0.113.20   # CHANGEME — your LB floating IP
+    cloud_private_network_adapter: enp7s0
+    floating_ip_name: lb-main
+    # hetzner_api_token: ANSIBLE VAULT
+  vars_files:
+    - secrets.yml
+  tasks:
+    - name: Update package lists and upgrade
+      apt:
+        update_cache: true
+        upgrade: true
+
+    - name: Install NAT-HA failover deps (curl + jq for the Hetzner API)
+      apt:
+        name:
+          - curl
+          - jq
+        state: present
+
+    - name: Check if /opt/hcloud-ip is installed
+      stat:
+        path: /opt/hcloud-ip
+      register: hcloud_ip_installed
+
+    - name: Download hcloud-ip if missing
+      get_url:
+        url: https://github.com/FootprintDev/hcloud-ip/releases/download/v0.0.1/hcloud-ip-linux64
+        dest: /opt/hcloud-ip
+        mode: "0755"
+      when: not hcloud_ip_installed.stat.exists
+
+    - name: Ensure hcloud-ip is executable
+      file:
+        path: /opt/hcloud-ip
+        mode: "0755"
+
+    - name: Verify Netplan Configuration file exists
+      stat:
+        path: /etc/netplan/60-floating-ip.yaml
+      register: netplan_config
+
+    - name: If file does not exist, create it
+      template:
+        src: ./templates/60-floating-ip.yaml.j2
+        dest: /etc/netplan/60-floating-ip.yaml
+        mode: "0644"
+      when: not netplan_config.stat.exists
+
+    - name: Apply Netplan Configuration
+      command: netplan apply
+      when: not netplan_config.stat.exists
+
+    - name: Install Keepalived
+      apt:
+        name: keepalived
+        state: present
+
+    - name: Install Haproxy
+      apt:
+        name: haproxy
+        state: present
+
+    - name: Create Keepalived Configuration File on Master Node (FIRST)
+      template:
+        src: ./templates/keepalived.conf.j2
+        dest: /etc/keepalived/keepalived.conf
+        mode: "0644"
+      vars:
+        private_network_adapter: "{{cloud_private_network_adapter}}"
+        primary_IP: "{{ ansible_enp7s0.ipv4.address }}"
+        secondary_IP: "{{ hostvars[groups['lb_main'][1]].ansible_enp7s0.ipv4.address }}"
+        lb_role: "MASTER"
+        node_priority: 200
+      #ROLE=MASTER ONLY
+      when: hostvars[inventory_hostname].role == "master"
+
+    - name: Create Keepalived Configuration File on Backup Node (SECOND)
+      template:
+        src: ./templates/keepalived.conf.j2
+        dest: /etc/keepalived/keepalived.conf
+        mode: "0644"
+      vars:
+        private_network_adapter: "{{cloud_private_network_adapter}}"
+        primary_IP: "{{ansible_enp7s0.ipv4.address}}"
+        secondary_IP: "{{ hostvars[groups['lb_main'][0]].ansible_enp7s0.ipv4.address }}"
+        lb_role: BACKUP
+        node_priority: 100
+      when: hostvars[inventory_hostname].role == "backup"
+
+    - name: Ensure Keepalived systemd dir exists
+      file:
+        path: /etc/systemd/system/keepalived.service.d
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Create systemd override for Keepalived
+      copy:
+        dest: /etc/systemd/system/keepalived.service.d/override.conf
+        content: |
+          [Service]
+          ExecStartPre=/bin/sleep 10s
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Reload systemd
+      command: systemctl daemon-reload
+
+    - name: Add Failover Script
+      template:
+        src: ./templates/failover.sh.j2
+        dest: /etc/keepalived/failover.sh
+        mode: "0755"
+
+    - name: Start Keepalived Service
+      service:
+        name: keepalived
+        state: started
+        enabled: true
+
+    - name: Configure Haproxy Loadbalancer
+      template:
+        src: ./templates/haproxy.cfg.j2
+        dest: /etc/haproxy/haproxy.cfg
+        mode: "0644"
+
+    - name: Enable Haproxy Service
+      service:
+        name: haproxy
+        state: started
+        enabled: true
+
+    - name: Restart Haproxy Service
+      service:
+        name: haproxy
+        state: restarted
+
+    - name: LOAD UFW FILE
+      template:
+        src: ./templates/ufw_rules.txt
+        dest: /etc/ufw/lb_ufw.conf
+        mode: "0644"
+
+    - name: SETUP UFW FROM FILE
+      shell: "while read line; do ufw ${line}; done < /etc/ufw/lb_ufw.conf"
+
+    - name: SETUP UFW
+      shell: "ufw --force enable"
+
+    # --- NAT-HA: the LBs route private-node egress; the keepalived MASTER becomes the active
+    #     gateway (the Hetzner network route points at it, swapped by failover.sh). Both LBs are
+    #     made NAT-capable so the backup is ready before any failover. ---
+    - name: Enable IPv4 forwarding (persistent)
+      copy:
+        dest: /etc/sysctl.d/99-nat.conf
+        content: "net.ipv4.ip_forward=1\n"
+        mode: "0644"
+      register: ipfwd
+
+    - name: Apply sysctl
+      command: sysctl --system
+      when: ipfwd.changed
+
+    - name: Allow routed/forwarded traffic in UFW
+      lineinfile:
+        path: /etc/default/ufw
+        regexp: '^DEFAULT_FORWARD_POLICY='
+        line: 'DEFAULT_FORWARD_POLICY="ACCEPT"'
+
+    - name: Add MASQUERADE for private-network egress to UFW before.rules
+      blockinfile:
+        path: /etc/ufw/before.rules
+        marker: "# {mark} NAT-HA"
+        insertbefore: BOF
+        block: |
+          *nat
+          :POSTROUTING ACCEPT [0:0]
+          # SNAT private-node (10.0.0.0/16) egress to the LB's public IP; leave intra-VPC alone.
+          -A POSTROUTING -s 10.0.0.0/16 ! -d 10.0.0.0/16 -j MASQUERADE
+          COMMIT
+
+    - name: Reload UFW to apply NAT
+      command: ufw reload
+
+    - name: Restart Keepalived Service
+      service:
+        name: keepalived
+        state: restarted

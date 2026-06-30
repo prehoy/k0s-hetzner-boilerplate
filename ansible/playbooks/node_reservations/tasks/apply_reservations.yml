@@ -1,0 +1,51 @@
+# Shared per-node steps (included by both the workers and controllers plays).
+- name: Read current ExecStart (drift guard)
+  command: "grep -m1 '^ExecStart=' /etc/systemd/system/{{ svc }}.service"
+  register: cur_exec
+  changed_when: false
+
+- name: Fail if ExecStart isn't what the drop-in expects (avoid breaking the node)
+  assert:
+    that: "base_exec in cur_exec.stdout"
+    fail_msg: >-
+      {{ inventory_hostname }} {{ svc }} ExecStart is '{{ cur_exec.stdout }}', expected to contain
+      '{{ base_exec }}'. Update base_exec before applying so the drop-in doesn't break the service.
+
+- name: Ensure systemd drop-in dir exists
+  file:
+    path: "/etc/systemd/system/{{ svc }}.service.d"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install kubelet-reservations systemd drop-in
+  copy:
+    dest: "/etc/systemd/system/{{ svc }}.service.d/10-reservations.conf"
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      [Service]
+      ExecStart=
+      ExecStart={{ base_exec }} "--kubelet-extra-args={{ kubelet_args }}"{{ (' ' + extra_args) if (extra_args | default('') | length > 0) else '' }}
+  register: dropin
+
+- name: Reload systemd + restart {{ svc }} (only when the drop-in changed)
+  when: dropin.changed
+  block:
+    - name: daemon-reload
+      systemd:
+        daemon_reload: true
+    - name: restart {{ svc }}
+      systemd:
+        name: "{{ svc }}"
+        state: restarted
+    - name: Wait for kubelet (10250) to come back
+      wait_for:
+        port: 10250
+        host: "{{ internal_ip }}"
+        timeout: 180
+    - name: Settle before the next node (serial)
+      pause:
+        seconds: 15

@@ -1,0 +1,27 @@
+# Shared non-secret env for HyperDX + the OTel collector (envFrom). Secret-bearing values
+# (MONGO_URI, DEFAULT_CONNECTIONS, passwords) are injected inline in the Deployments via the
+# SealedSecret, never here.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: hyperdx-config
+  namespace: observability
+data:
+  FRONTEND_URL: "https://logs.example.com"
+  HYPERDX_APP_URL: "https://logs.example.com"
+  HYPERDX_API_PORT: "8000"
+  HYPERDX_APP_PORT: "3000"
+  OPAMP_PORT: "4320"
+  OPAMP_SERVER_URL: "http://hyperdx:4320"
+  HYPERDX_LOG_LEVEL: "info"
+  OTEL_SERVICE_NAME: "hdx-oss-app"
+  USAGE_STATS_ENABLED: "false"
+  OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector:4318"
+  # ClickHouse wiring (the otelcollector user ingests; HyperDX queries via DEFAULT_CONNECTIONS)
+  CLICKHOUSE_USER: "otelcollector"
+  CLICKHOUSE_ENDPOINT: "tcp://clickhouse:9000?dial_timeout=10s"
+  CLICKHOUSE_SERVER_ENDPOINT: "clickhouse:9000"
+  # the OpAMP-pushed collector config has a prometheus receiver scraping this — must resolve or
+  # otelcol aborts config application. (9363 = ClickHouse prometheus endpoint; scrape is best-effort.)
+  CLICKHOUSE_PROMETHEUS_METRICS_ENDPOINT: "clickhouse:9363"
+  HYPERDX_OTEL_EXPORTER_CLICKHOUSE_DATABASE: "default"

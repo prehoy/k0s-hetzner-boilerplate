@@ -1,0 +1,6 @@
+# Managed by Ansible (log_hardening playbook). Run logrotate hourly instead of the default daily,
+# so the maxsize cap in /etc/logrotate.d/rsyslog is enforced before a flood can fill the disk.
+[Timer]
+OnCalendar=
+OnCalendar=hourly
+RandomizedDelaySec=300

@@ -1,0 +1,33 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: woodpecker
+  namespace: argocd
+spec:
+  project: default
+  sources:
+    # Helm chart: woodpecker-server + agent.
+    - repoURL: https://woodpecker-ci.org
+      chart: woodpecker
+      targetRevision: 3.6.4
+      helm:
+        releaseName: woodpecker
+        valueFiles:
+          - $values/gitops/base/woodpecker/values.yaml
+    # IngressRoute + sealed woodpecker-secrets (kustomize path).
+    - repoURL: git@github.com:YOUR_ORG/infra.git
+      targetRevision: main
+      path: gitops/base/woodpecker
+    # Ref source for the $values path above.
+    - repoURL: git@github.com:YOUR_ORG/infra.git
+      targetRevision: main
+      ref: values
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: ci-build
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

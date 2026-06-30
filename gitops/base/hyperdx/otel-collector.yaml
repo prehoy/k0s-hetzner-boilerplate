@@ -1,0 +1,121 @@
+# OTel collector — vanilla otel-collector-contrib (the ClickStack image shipped a broken config
+# template). Static, self-contained pipeline: OTLP 4317/4318 -> contrib ClickHouse exporter ->
+# default.otel_logs/otel_traces/otel_metrics_* (standard OTel schema, which HyperDX's sources read).
+# ClusterIP only; apps/agents send to http://otel-collector.observability:4318 (HTTP) / :4317 (gRPC).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: otel-collector-static
+  namespace: observability
+data:
+  config.yaml: |
+    receivers:
+      otlp:
+        protocols:
+          grpc: { endpoint: 0.0.0.0:4317 }
+          http: { endpoint: 0.0.0.0:4318 }
+    processors:
+      # memory_limiter MUST be first: applies backpressure (refuses/drops data) before the cgroup
+      # OOM-killer fires. Without it otel OOMKills in a loop at 600k logs/min and the kernel OOM
+      # churn stalled the kubelet -> worker-3 flapped NotReady -> mass eviction. soft limit ~750MiB
+      # (limit_mib - spike) under the 1Gi cgroup cap.
+      memory_limiter:
+        check_interval: 1s
+        limit_mib: 900
+        spike_limit_mib: 150
+      batch:
+        timeout: 5s
+        send_batch_size: 2048
+    exporters:
+      clickhouse:
+        endpoint: ${env:CLICKHOUSE_ENDPOINT}
+        database: ${env:HYPERDX_OTEL_EXPORTER_CLICKHOUSE_DATABASE}
+        username: ${env:CLICKHOUSE_USER}
+        password: ${env:CLICKHOUSE_PASSWORD}
+        create_schema: true
+        logs_table_name: otel_logs
+        traces_table_name: otel_traces
+        # Log/trace/metric retention. The contrib ClickHouse exporter bakes this into the table TTL
+        # at CREATE time — so it only governs NEWLY created tables. Existing tables were created
+        # without a TTL (unbounded growth); they were ALTER'd to match this (see RUNBOOK / 30d = 720h).
+        ttl: 720h
+        timeout: 10s
+        retry_on_failure:
+          enabled: true
+        sending_queue:
+          enabled: true
+    extensions:
+      health_check:
+        endpoint: 0.0.0.0:13133
+    service:
+      extensions: [health_check]
+      pipelines:
+        logs:    { receivers: [otlp], processors: [memory_limiter, batch], exporters: [clickhouse] }
+        traces:  { receivers: [otlp], processors: [memory_limiter, batch], exporters: [clickhouse] }
+        metrics: { receivers: [otlp], processors: [memory_limiter, batch], exporters: [clickhouse] }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: otel-collector
+  namespace: observability
+spec:
+  selector:
+    app: otel-collector
+  ports:
+    - { name: otlp-grpc, port: 4317, targetPort: 4317, protocol: TCP }
+    - { name: otlp-http, port: 4318, targetPort: 4318, protocol: TCP }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: otel-collector
+  namespace: observability
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: otel-collector
+  template:
+    metadata:
+      labels:
+        app: otel-collector
+    spec:
+      # Pinned to the dedicated observability node (worker-3) with ClickHouse/Mongo — keeps the
+      # heavy 600k/min log-ingest CPU off the app workers. See clickhouse.yaml.
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: node-pool
+                    operator: In
+                    values: ["observability"]
+      tolerations:
+        - { key: dedicated, operator: Equal, value: observability, effect: NoSchedule }
+      containers:
+        - name: otel-collector
+          image: otel/opentelemetry-collector-contrib:0.119.0
+          args: ["--config=/etc/otel/config.yaml"]
+          envFrom:
+            - configMapRef:
+                name: hyperdx-config       # CLICKHOUSE_ENDPOINT/USER, DB name
+            - secretRef:
+                name: hyperdx-secrets      # CLICKHOUSE_PASSWORD
+          ports:
+            - { name: otlp-grpc, containerPort: 4317 }
+            - { name: otlp-http, containerPort: 4318 }
+            - { name: health, containerPort: 13133 }
+          volumeMounts:
+            - { name: config, mountPath: /etc/otel }
+          readinessProbe:
+            httpGet: { path: /, port: 13133 }
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          resources:
+            requests: { cpu: "100m", memory: "512Mi" }
+            limits: { cpu: "1", memory: "1Gi" }   # 512Mi OOMKilled in a loop at 600k logs/min; memory_limiter backpressures under this
+      volumes:
+        - name: config
+          configMap:
+            name: otel-collector-static

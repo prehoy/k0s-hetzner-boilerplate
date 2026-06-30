@@ -1,0 +1,83 @@
+# Cluster Autoscaler (Hetzner cloud provider). Watches for unschedulable pods and grows/shrinks the
+# `cas-pool` (cx23 worker nodes in the dedicated 10.0.1.0/24 subnet). New nodes cloud-init-join as k0s
+# workers; scale-down drains (respecting PodDisruptionBudgets) and deletes the hcloud server.
+# Pool size + cloud-init + subnet are configured via HCLOUD_CLUSTER_CONFIG (sealed). See
+# docs/RUNBOOK-node-autoscaling.md.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cluster-autoscaler
+  namespace: kube-system
+  labels:
+    app: cluster-autoscaler
+spec:
+  # Enabled as a min-0 burst/failure safety net (2026-06-18): the static pool (worker-0,1,2,5 ccx13 +
+  # worker-4 ccx23) holds the steady load, so CAS idles at 0 cas-pool nodes and only bursts when pods
+  # go Pending (then scales back to 0). --nodes min=0 below. NOTE: change enable/disable via THIS git
+  # value only — `kubectl scale` is reverted by ArgoCD self-heal.
+  replicas: 1
+  selector:
+    matchLabels:
+      app: cluster-autoscaler
+  template:
+    metadata:
+      labels:
+        app: cluster-autoscaler
+    spec:
+      serviceAccountName: cluster-autoscaler
+      priorityClassName: system-cluster-critical
+      # Keep CAS on a stable control-plane node (it must survive scale-down of worker nodes).
+      # Managers run --no-taints, so a nodeSelector alone suffices.
+      nodeSelector:
+        node.k0sproject.io/role: control-plane
+      containers:
+        - name: cluster-autoscaler
+          image: registry.k8s.io/autoscaling/cluster-autoscaler:v1.34.0
+          command:
+            - ./cluster-autoscaler
+            - --cloud-provider=hetzner
+            - --stderrthreshold=info
+            # cpx21 matches the static workers (uniform nodes for --balance-similar-node-groups).
+            # min 0: 3 static workers + 3 schedulable managers already provide baseline worker
+            # capacity, so cas-pool is pure burst — scales up from 0 only under real scheduling
+            # pressure. max 9 is generous incident headroom. prod is ash (us-east), no cx-types there.
+            - --nodes=0:9:CPX11:ASH:cas-pool   # cpx11 (2GB) = cheapest elastic burst unit ($17.49); reservations trimmed in cloud-init to fit
+            # proactively keep the pool at minSize (2) for baseline headroom — without this, min is
+            # only a scale-down floor and an empty pool stays at 0 until pods go Pending.
+            - --enforce-node-group-min-size=true
+            - --expander=least-waste
+            - --scale-down-enabled=true
+            - --scale-down-utilization-threshold=0.5
+            - --scale-down-unneeded-time=10m
+            - --scale-down-delay-after-add=10m
+            - --max-node-provision-time=12m
+            - --balance-similar-node-groups
+            # Hetzner can be temporarily out of stock for a server type. CAS backs off a failed
+            # scale-up and keeps retrying (it never gives up while pods are Pending); these bounds keep
+            # retries frequent (2m→…→10m cap) instead of the 30m default, so the pool fills as soon as
+            # cpx21 capacity returns. See docs/RUNBOOK-node-autoscaling.md.
+            - --initial-node-group-backoff-duration=2m
+            - --max-node-group-backoff-duration=10m
+          env:
+            - name: HCLOUD_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: cluster-autoscaler-hcloud
+                  key: HCLOUD_TOKEN
+            - name: HCLOUD_NETWORK
+              value: mainNet
+            - name: HCLOUD_CLUSTER_CONFIG
+              valueFrom:
+                secretKeyRef:
+                  name: cluster-autoscaler-hcloud
+                  key: HCLOUD_CLUSTER_CONFIG
+            # SSH key on autoscaled nodes so they're reachable for ops/debug. Without this,
+            # CAS-created nodes have no key and are unreachable. Matches the static nodes' key.
+            - name: HCLOUD_SSH_KEY
+              value: igor_tf_ssh
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              memory: 256Mi

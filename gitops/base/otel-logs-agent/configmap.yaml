@@ -1,0 +1,77 @@
+# Node log agent pipeline: tail container stdout/stderr -> tag with k8s metadata -> ship OTLP to the
+# central ClickStack collector (which writes to ClickHouse). The `container` operator auto-parses the
+# containerd CRI log format and sets k8s.pod.uid/name/namespace/container from the file path.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: otel-logs-agent
+  namespace: observability
+data:
+  config.yaml: |
+    receivers:
+      filelog:
+        include: [ /var/log/pods/*/*/*.log ]
+        # don't ingest our own logging pipeline (avoid feedback loops)
+        exclude:
+          - /var/log/pods/observability_otel-logs-agent-*/*/*.log
+          - /var/log/pods/observability_otel-collector-*/*/*.log
+        start_at: end
+        include_file_path: true
+        retry_on_failure:
+          enabled: true
+        operators:
+          - type: container
+            add_metadata_from_filepath: true
+    processors:
+      # memory_limiter first: backpressure on the filelog reader before the cgroup OOM-killer fires.
+      # At 600k logs/min the 256Mi agent was OOMKilled in a loop (exit 137, 80+ restarts/node).
+      memory_limiter:
+        check_interval: 1s
+        limit_mib: 400
+        spike_limit_mib: 80
+      k8sattributes:
+        auth_type: serviceAccount
+        passthrough: false
+        pod_association:
+          - sources:
+              - from: resource_attribute
+                name: k8s.pod.uid
+        extract:
+          metadata:
+            - k8s.namespace.name
+            - k8s.pod.name
+            - k8s.pod.uid
+            - k8s.container.name
+            - k8s.deployment.name
+            - k8s.daemonset.name
+            - k8s.statefulset.name
+            - k8s.node.name
+      # set service.name from the k8s workload so logs group by app in HyperDX (filelog has none)
+      transform:
+        error_mode: ignore
+        log_statements:
+          - context: resource
+            statements:
+              - set(attributes["service.name"], attributes["k8s.deployment.name"]) where attributes["service.name"] == nil and attributes["k8s.deployment.name"] != nil
+              - set(attributes["service.name"], attributes["k8s.daemonset.name"]) where attributes["service.name"] == nil and attributes["k8s.daemonset.name"] != nil
+              - set(attributes["service.name"], attributes["k8s.statefulset.name"]) where attributes["service.name"] == nil and attributes["k8s.statefulset.name"] != nil
+              - set(attributes["service.name"], attributes["k8s.pod.name"]) where attributes["service.name"] == nil and attributes["k8s.pod.name"] != nil
+      resourcedetection:
+        detectors: [env, system]
+        system:
+          hostname_sources: [os]
+      batch:
+        timeout: 5s
+        send_batch_size: 1024
+    exporters:
+      otlphttp:
+        endpoint: http://otel-collector.observability:4318
+    service:
+      telemetry:
+        logs:
+          level: warn
+      pipelines:
+        logs:
+          receivers: [filelog]
+          processors: [memory_limiter, k8sattributes, transform, resourcedetection, batch]
+          exporters: [otlphttp]

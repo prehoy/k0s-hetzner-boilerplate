@@ -1,0 +1,96 @@
+# Alertmanager — HA pair (2 replicas) gossiping over :9094 so a single node loss can't silence
+# alerting. State (silences/notification log) is on local hostPath per replica (disposable — same
+# reasoning as Prometheus, no NFS); the gossip mesh replicates silences + the notification log
+# between the two, and dedups notifications so you don't get doubled pages. Anti-affinity spreads
+# the replicas across nodes. Secrets (slack url + smtp password) from the alertmanager-secrets
+# SealedSecret. Reachable in-cluster at http://alertmanager.monitoring:9093; Prometheus fans alerts
+# out to BOTH via DNS-SD on the headless alertmanager-peers service.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: alertmanager
+  namespace: monitoring
+spec:
+  replicas: 2
+  strategy: { type: RollingUpdate, rollingUpdate: { maxUnavailable: 1, maxSurge: 0 } }
+  selector:
+    matchLabels: { app: alertmanager }
+  template:
+    metadata:
+      labels: { app: alertmanager }
+    spec:
+      # Off the control-plane nodes (app load made the 4GB managers OOM-flap) and off the ephemeral
+      # burst pool (the autoscaler could delete the node out from under the alerting path).
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - { key: node-role.kubernetes.io/control-plane, operator: DoesNotExist }
+                  - { key: node-pool, operator: NotIn, values: ["burst"] }
+        # Spread the two replicas across nodes — the whole point of HA is surviving one node dying.
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector: { matchLabels: { app: alertmanager } }
+              topologyKey: kubernetes.io/hostname
+      securityContext: { fsGroup: 65534, runAsUser: 65534, runAsNonRoot: true }
+      initContainers:
+        - name: chown-data
+          image: busybox:1.36
+          command: ["sh", "-c", "mkdir -p /data && chown 65534:65534 /data"]
+          securityContext: { runAsUser: 0, runAsNonRoot: false }
+          volumeMounts: [{ name: data, mountPath: /data }]
+      containers:
+        - name: alertmanager
+          image: prom/alertmanager:v0.28.0
+          args:
+            - --config.file=/etc/alertmanager/alertmanager.yml
+            - --storage.path=/data
+            # so silence/source links in notifications use the public URL, not the in-cluster pod
+            - --web.external-url=https://alertmanager.example.com
+            # gossip mesh: listen on 9094, find peers via the headless service (resolves to both pods)
+            - --cluster.listen-address=0.0.0.0:9094
+            - --cluster.peer=alertmanager-peers.monitoring.svc.cluster.local:9094
+          ports:
+            - { name: web, containerPort: 9093 }
+            - { name: mesh-tcp, containerPort: 9094, protocol: TCP }
+            - { name: mesh-udp, containerPort: 9094, protocol: UDP }
+          volumeMounts:
+            - { name: config, mountPath: /etc/alertmanager }
+            - { name: secrets, mountPath: /etc/alertmanager/secrets, readOnly: true }
+            - { name: data, mountPath: /data }
+          resources:
+            requests: { cpu: "20m", memory: "32Mi" }
+            limits: { cpu: "200m", memory: "128Mi" }
+      volumes:
+        - { name: config, configMap: { name: alertmanager-config } }
+        - { name: secrets, secret: { secretName: alertmanager-secrets } }
+        - name: data
+          hostPath: { path: /var/lib/alertmanager, type: DirectoryOrCreate }
+---
+# ClusterIP service for the UI / general in-cluster access.
+apiVersion: v1
+kind: Service
+metadata:
+  name: alertmanager
+  namespace: monitoring
+spec:
+  selector: { app: alertmanager }
+  ports: [{ name: web, port: 9093, targetPort: web }]
+---
+# Headless service: (1) gossip peer discovery on 9094, (2) lets Prometheus DNS-SD discover EVERY
+# alertmanager pod so it sends each alert to both (gossip then dedups the notification).
+# publishNotReadyAddresses so peers find each other during startup before they're Ready.
+apiVersion: v1
+kind: Service
+metadata:
+  name: alertmanager-peers
+  namespace: monitoring
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector: { app: alertmanager }
+  ports:
+    - { name: web, port: 9093, targetPort: web }
+    - { name: mesh-tcp, port: 9094, targetPort: mesh-tcp, protocol: TCP }
+    - { name: mesh-udp, port: 9094, targetPort: mesh-udp, protocol: UDP }

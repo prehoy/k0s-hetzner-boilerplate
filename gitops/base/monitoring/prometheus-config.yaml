@@ -1,0 +1,198 @@
+# Prometheus scrape config + alert rules.
+# Scrape targets:
+#   - prometheus itself
+#   - kubelet (node metrics) + cAdvisor (per-container CPU/mem/net) via the node API
+#   - kube-state-metrics (object state: replicas, restarts, phase, ...)
+#   - node-exporter (host CPU/mem/disk/net) via pod discovery
+#   - traefik (requests by entrypoint/service — metrics.prometheus already enabled in its values)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-config
+  namespace: monitoring
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 30s
+      evaluation_interval: 30s
+
+    rule_files:
+      - /etc/prometheus/rules/*.yaml
+
+    alerting:
+      alertmanagers:
+        # DNS-SD on the headless service resolves to EVERY alertmanager pod, so each alert is sent to
+        # both HA replicas (they gossip-dedup the notification). A plain ClusterIP target would only
+        # reach one at a time, defeating the HA pair.
+        - dns_sd_configs:
+            - names: [alertmanager-peers.monitoring.svc.cluster.local]
+              type: A
+              port: 9093
+
+    scrape_configs:
+      - job_name: prometheus
+        static_configs:
+          - targets: [localhost:9090]
+
+      # kubelet /metrics (node-level)
+      - job_name: kubelet
+        scheme: https
+        tls_config: { ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt, insecure_skip_verify: true }
+        bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+        kubernetes_sd_configs: [{ role: node }]
+        relabel_configs:
+          - action: labelmap
+            regex: __meta_kubernetes_node_label_(.+)
+          - target_label: __address__
+            replacement: kubernetes.default.svc:443
+          - source_labels: [__meta_kubernetes_node_name]
+            regex: (.+)
+            target_label: __metrics_path__
+            replacement: /api/v1/nodes/${1}/proxy/metrics
+
+      # cAdvisor (per-container resource usage) — the per-app CPU/mem source
+      - job_name: cadvisor
+        scheme: https
+        tls_config: { ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt, insecure_skip_verify: true }
+        bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+        kubernetes_sd_configs: [{ role: node }]
+        relabel_configs:
+          - action: labelmap
+            regex: __meta_kubernetes_node_label_(.+)
+          - target_label: __address__
+            replacement: kubernetes.default.svc:443
+          - source_labels: [__meta_kubernetes_node_name]
+            regex: (.+)
+            target_label: __metrics_path__
+            replacement: /api/v1/nodes/${1}/proxy/metrics/cadvisor
+
+      - job_name: kube-state-metrics
+        static_configs:
+          - targets: [kube-state-metrics:8080]
+
+      # Traefik (separate manual helm release, hostNetwork) — metrics on the :9100 metrics entrypoint
+      # (chart default). metrics.prometheus already enabled in its values; this turns it into scraped.
+      - job_name: traefik
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces: { names: [traefik] }
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_name]
+            action: keep
+            regex: traefik
+          - source_labels: [__meta_kubernetes_pod_ip]
+            target_label: __address__
+            replacement: ${1}:9100
+          - source_labels: [__meta_kubernetes_pod_node_name]
+            target_label: node
+
+      # node-exporter + traefik: scrape any pod with prometheus.io/scrape=true annotation
+      - job_name: annotated-pods
+        kubernetes_sd_configs: [{ role: pod }]
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+            action: keep
+            regex: "true"
+          - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_port, __meta_kubernetes_pod_ip]
+            action: replace
+            regex: (\d+);(.+)
+            replacement: $2:$1
+            target_label: __address__
+          - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
+            action: replace
+            regex: (.+)
+            target_label: __metrics_path__
+          - source_labels: [__meta_kubernetes_namespace]
+            target_label: namespace
+          - source_labels: [__meta_kubernetes_pod_name]
+            target_label: pod
+          - source_labels: [__meta_kubernetes_pod_label_app]
+            target_label: app
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-rules
+  namespace: monitoring
+data:
+  rules.yaml: |
+    groups:
+      - name: basics
+        rules:
+          - alert: TargetDown
+            expr: up == 0
+            for: 5m
+            labels: { severity: warning }
+            annotations:
+              summary: "Scrape target {{ $labels.job }} ({{ $labels.instance }}) is down"
+          - alert: PodCrashLooping
+            expr: increase(kube_pod_container_status_restarts_total[15m]) > 3
+            for: 5m
+            labels: { severity: warning }
+            annotations:
+              summary: "{{ $labels.namespace }}/{{ $labels.pod }} is crash-looping"
+          - alert: PodHighMemory
+            expr: |
+              sum by (namespace, pod) (container_memory_working_set_bytes{container!=""})
+              / sum by (namespace, pod) (kube_pod_container_resource_limits{resource="memory"}) > 0.9
+            for: 10m
+            labels: { severity: warning }
+            annotations:
+              summary: "{{ $labels.namespace }}/{{ $labels.pod }} >90% of its memory limit"
+          - alert: NodeDiskFull
+            expr: node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"} < 0.1
+            for: 10m
+            labels: { severity: critical }
+            annotations:
+              summary: "Node {{ $labels.instance }} root fs <10% free"
+          # Heads-up (Slack only, never pages): the autoscaler added burst node(s) for elevated
+          # traffic. Auto-resolves when the pool scales back to 0. NOT an alarm — informational.
+          - alert: BurstNodeActive
+            expr: count(kube_node_info{node=~"cas-pool-.*"}) > 0
+            for: 2m
+            labels: { severity: info }
+            annotations:
+              summary: "Burst capacity active: {{ $value }} cas-pool node(s) up (elevated traffic)"
+      - name: performance
+        rules:
+          # App is CPU-throttled (CFS) — needs a higher CPU limit or fewer neighbours.
+          - alert: AppCPUThrottled
+            expr: |
+              sum by (namespace, pod) (rate(container_cpu_cfs_throttled_periods_total{container!=""}[5m]))
+              / sum by (namespace, pod) (rate(container_cpu_cfs_periods_total{container!=""}[5m])) > 0.25
+            for: 10m
+            labels: { severity: warning }
+            annotations:
+              summary: "{{ $labels.namespace }}/{{ $labels.pod }} CPU-throttled >25% of the time"
+          # App getting slow — avg request latency (exact, from _sum/_count; bucket-independent).
+          # >2s clears the known ~1s NextJS-SSR baseline; min 0.1 req/s avoids idle-service noise.
+          - alert: AppHighLatency
+            expr: |
+              ( sum by (service) (rate(traefik_service_request_duration_seconds_sum[5m]))
+                / sum by (service) (rate(traefik_service_request_duration_seconds_count[5m])) > 2 )
+              and sum by (service) (rate(traefik_service_requests_total[5m])) > 0.1
+            for: 10m
+            labels: { severity: warning }
+            annotations:
+              summary: "{{ $labels.service }} avg request latency >2s (slow)"
+          - alert: AppLatencyCritical
+            expr: |
+              ( sum by (service) (rate(traefik_service_request_duration_seconds_sum[5m]))
+                / sum by (service) (rate(traefik_service_request_duration_seconds_count[5m])) > 5 )
+              and sum by (service) (rate(traefik_service_requests_total[5m])) > 0.1
+            for: 5m
+            labels: { severity: critical }
+            annotations:
+              summary: "{{ $labels.service }} avg request latency >5s"
+          - alert: App5xxElevated
+            expr: sum by (service) (rate(traefik_service_requests_total{code=~"5.."}[5m])) > 1
+            for: 5m
+            labels: { severity: warning }
+            annotations:
+              summary: "{{ $labels.service }} serving >1 5xx/s"
+          # Node Ready state flapping (the worker-6 failure mode) — Ready toggled >2x in 30m.
+          - alert: NodeFlapping
+            expr: changes(kube_node_status_condition{condition="Ready",status="true"}[30m]) > 2
+            labels: { severity: critical }
+            annotations:
+              summary: "Node {{ $labels.node }} Ready state flapping (>2 changes/30m)"

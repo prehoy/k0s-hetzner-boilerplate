@@ -1,0 +1,42 @@
+# Copy to `inventory` (gitignored) and fill in real IPs from `terraform output`.
+# Public IPs are placeholders (TEST-NET-3, RFC 5737); private IPs follow the 10.0.0.0/16 plan:
+#   managers .3-.49 | workers .50-.99 | db .100-.149 | backoffice .150 | nfs .200-.209 | lb .210-.211
+
+[backoffice]
+203.0.113.10
+
+[lb_main]
+203.0.113.20 role=master
+203.0.113.21 role=backup
+
+[k0s_controllers]
+10.0.0.3  role=leader
+10.0.0.4
+10.0.0.5
+
+[k0s_workers]
+10.0.0.50
+10.0.0.51
+10.0.0.52
+
+# NFS HA pair. drbd_volume_id = the dedicated nfs-drbd-N volume from `terraform output
+# nfs_drbd_volume_ids` (NOT the legacy 'nfs' volume). VIP 10.0.0.199 floats between them.
+[nfs]
+10.0.0.200 role=master hostname=nfs-0 drbd_priority=200 drbd_volume_id=CHANGEME
+10.0.0.201 role=backup hostname=nfs-1 drbd_priority=100 drbd_volume_id=CHANGEME
+
+# Diskless DRBD quorum tiebreaker (no data, no NFS, no keepalived) — reuses the backoffice box on its
+# private IP. Provides the 3rd vote so a partitioned NFS node loses quorum and suspends I/O instead of
+# diverging. hostname must match `uname -n`.
+[nfs_tiebreaker]
+10.0.0.150 hostname=backoffice-nat drbd_diskless=true
+
+# All DRBD members (pair + tiebreaker) — used to render the shared r0.res on every node.
+[nfs_cluster:children]
+nfs
+nfs_tiebreaker
+
+[db]
+10.0.0.100 hostname=database-server-0
+10.0.0.101 hostname=database-server-1
+10.0.0.102 hostname=database-server-2

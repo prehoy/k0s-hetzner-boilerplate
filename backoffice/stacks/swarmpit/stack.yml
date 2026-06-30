@@ -1,0 +1,124 @@
+# Swarmpit - web UI for managing the single-node backoffice Swarm.
+# Modeled on LAWBOT/infra/services/backoffice/swarmpit, trimmed for one node:
+# no node-hostname pinning (everything lives on backoffice-nat), local volumes.
+# TLS via the traefik stack (Let's Encrypt + Cloudflare DNS-01, resolver "le").
+#
+# IMPORTANT — "client version 1.30 is too old": the swarmpit APP (Clojure) hardcodes Docker API v1.30
+# and IGNORES the DOCKER_API_VERSION env below (that env only helps the Go agent + docker CLI). Docker
+# 25+ defaults the daemon min API to 1.44 and rejects 1.30. The REAL fix is daemon-side:
+# DOCKER_MIN_API_VERSION=1.24 on dockerd (see backoffice_init playbook). The app env is left as a no-op
+# documentation marker / for the agent.
+version: "3.9"
+
+services:
+  app:
+    image: swarmpit/swarmpit:1.9
+    environment:
+      SWARMPIT_DB: "http://db:5984"
+      SWARMPIT_INFLUXDB: "http://influxdb:8086"
+      # prod runs Docker 29.x (MinAPIVersion 1.44); swarmpit's client defaults to 1.30 -> rejected.
+      # Pin it (the agent already does). ponytail: needed because prod's Docker is newer than staging's 28.x.
+      DOCKER_API_VERSION: "1.44"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - net
+      - traefik-public
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 1024M
+        reservations:
+          cpus: "0.25"
+          memory: 512M
+      placement:
+        constraints:
+          - node.role == manager
+      labels:
+        traefik.enable: "true"
+        traefik.swarm.network: traefik-public
+        # HTTPS router (http->https redirect is global on the traefik web entrypoint)
+        traefik.http.routers.swarmpit.rule: "Host(`swarmpit.bo.example.com`)"
+        traefik.http.routers.swarmpit.entrypoints: websecure
+        traefik.http.routers.swarmpit.tls: "true"
+        traefik.http.routers.swarmpit.tls.certresolver: le
+        traefik.http.services.swarmpit.loadbalancer.server.port: 8080
+
+  db:
+    image: couchdb:2.3.1
+    user: root
+    volumes:
+      - swarmpit-couchdb:/opt/couchdb/data
+    networks:
+      - net
+    deploy:
+      placement:
+        constraints:
+          - node.role == manager
+      labels:
+        traefik.enable: "false"
+      resources:
+        limits:
+          cpus: "0.30"
+          memory: 512M
+        reservations:
+          cpus: "0.15"
+          memory: 256M
+
+  influxdb:
+    image: influxdb:1.8
+    environment:
+      # Disable InfluxDB's internal self-monitoring (_internal db). It grew unbounded and on startup
+      # tried to load ~750MB of shards into the 512M container -> OOMKill loop -> swarmpit 502.
+      # Off = no _internal growth; the existing _internal ages out via retention.
+      INFLUXDB_MONITOR_STORE_ENABLED: "false"
+    volumes:
+      - swarmpit-influxdb:/var/lib/influxdb
+    networks:
+      - net
+    deploy:
+      placement:
+        constraints:
+          - node.role == manager
+      labels:
+        traefik.enable: "false"
+      resources:
+        limits:
+          cpus: "0.6"
+          memory: 1024M   # was 512M — too small to load the bloated _internal on startup (OOM loop)
+        reservations:
+          cpus: "0.3"
+          memory: 128M
+
+  agent:
+    image: swarmpit/agent:2.2
+    environment:
+      DOCKER_API_VERSION: "1.44"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - net
+    deploy:
+      mode: global
+      labels:
+        traefik.enable: "false"
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 256M
+        reservations:
+          cpus: "0.05"
+          memory: 64M
+
+networks:
+  net:
+    driver: overlay
+    attachable: true
+  # shared edge network, created/owned by the reconciler (external to every stack)
+  traefik-public:
+    external: true
+
+volumes:
+  swarmpit-couchdb:
+  swarmpit-influxdb:

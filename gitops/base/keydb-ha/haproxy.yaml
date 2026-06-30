@@ -1,0 +1,41 @@
+# HAProxy front: 2 replicas, each renders haproxy.cfg from the template (injecting the keydb password
+# via an init-container sed, same pattern as twilio-api pgcat-render). Routes :6379 to whichever keydb
+# reports role:master. This is the single stable endpoint the keydb Service is repointed at on cutover.
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: keydb-ha-haproxy, namespace: data }
+spec:
+  replicas: 2
+  selector: { matchLabels: { app: keydb-ha-haproxy } }
+  template:
+    metadata: { labels: { app: keydb-ha-haproxy } }
+    spec:
+      nodeSelector: { node-pool: static }
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector: { matchLabels: { app: keydb-ha-haproxy } }
+              topologyKey: kubernetes.io/hostname
+      initContainers:
+        - name: render
+          image: busybox:1.36
+          command: ["sh","-c","sed \"s|__PW__|$KEYDB_PASSWORD|g\" /tmpl/haproxy.cfg.tmpl > /rendered/haproxy.cfg"]
+          env:
+            - { name: KEYDB_PASSWORD, valueFrom: { secretKeyRef: { name: keydb-secret, key: KEYDB_PASSWORD } } }
+          volumeMounts:
+            - { name: tmpl,     mountPath: /tmpl }
+            - { name: rendered, mountPath: /rendered }
+      containers:
+        - name: haproxy
+          image: haproxy:2.9-alpine
+          args: ["-f","/usr/local/etc/haproxy/haproxy.cfg"]
+          ports: [ { containerPort: 6379, name: redis } ]
+          volumeMounts:
+            - { name: rendered, mountPath: /usr/local/etc/haproxy, readOnly: true }
+          readinessProbe: { tcpSocket: { port: 6379 }, initialDelaySeconds: 5, periodSeconds: 10 }
+          resources:
+            requests: { cpu: "25m",  memory: "32Mi" }
+            limits:   { cpu: "500m", memory: "64Mi" }
+      volumes:
+        - { name: tmpl,     configMap: { name: keydb-ha-haproxy-tmpl } }
+        - { name: rendered, emptyDir: {} }

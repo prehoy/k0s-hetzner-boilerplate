@@ -1,0 +1,279 @@
+- name: Set up PostgreSQL cluster
+  hosts: db
+  become: true
+  vars:
+    data_dir: /mnt/HC_VOLUME/pg_data
+    bin_dir: /usr/lib/postgresql/18/bin/
+
+  tasks:
+    - name: Update and Upgrade APT
+      apt:
+        update_cache: yes
+        upgrade: yes
+
+    - name: Ensure WGET is installed
+      apt:
+        name: wget
+        state: present
+
+    - name: Check if etcd is in /usr/bin
+      command: test -f /usr/bin/etcd
+      register: etcd_check
+      ignore_errors: true
+      # failed_when: etcd_check.rc != 0
+
+    - name: Get ETCD tar file
+      get_url:
+        url: https://github.com/etcd-io/etcd/releases/download/v3.6.8/etcd-v3.6.8-linux-amd64.tar.gz
+        dest: /tmp/etcd-v3.6.8-linux-amd64.tar.gz
+      when: etcd_check.rc != 0
+
+    - name: Unpack etcd
+      command: tar -xvf /tmp/etcd-v3.6.8-linux-amd64.tar.gz -C /tmp/
+      when: etcd_check.rc != 0
+
+    - name: Copy etcd etcdctl and etcdutl to
+      command: cp /tmp/etcd-v3.6.8-linux-amd64/etcd /tmp/etcd-v3.6.8-linux-amd64/etcdctl /tmp/etcd-v3.6.8-linux-amd64/etcdutl /usr/bin/
+      when: etcd_check.rc != 0
+
+    - name: Save etcd version
+      command: etcd --version
+      register: etcd_version
+      changed_when: etcd_version.rc == 0
+
+    - name: Print etcd version
+      debug:
+        msg: "etcd version is {{ etcd_version.stdout }}"
+
+    - name: Add etcd group
+      group:
+        name: etcd
+        state: present
+
+    - name: Add etcd user
+      user:
+        name: etcd
+        group: etcd
+        state: present
+
+    - name: Stop etcd service if exists
+      systemd:
+        name: etcd.service
+        state: stopped
+        enabled: no
+      ignore_errors: true
+
+    - name: Remove data directory
+      file:
+        path: /var/lib/etcd
+        state: absent
+        force: yes
+      ignore_errors: true
+
+    - name: Create etcd data directory
+      file:
+        path: /var/lib/etcd
+        state: directory
+        owner: etcd
+        group: etcd
+        mode: 0755
+
+    - name: Create etcd config directory
+      file:
+        path: /etc/etcd
+        state: directory
+        owner: etcd
+        group: etcd
+        mode: 0755
+
+    - name: Build etcd initial cluster string
+      set_fact:
+        etcd_initial_cluster: >-
+          {% for host in groups['db'] %}{{ hostvars[host]['hostname'] }}=http://{{ host }}:2380{% if not loop.last %},{% endif %}{% endfor %}
+
+    - name: Show cluster string
+      debug:
+        var: etcd_initial_cluster
+
+    - name: Copy etcd configuration file
+      template:
+        src: etcd.yaml.j2
+        dest: /etc/etcd/etcd.yaml
+        owner: etcd
+        group: etcd
+        mode: 0644
+      vars:
+        etcd_name: "{{ansible_hostname}}"
+        etcd_host_ip: "{{ ansible_default_ipv4.address }}"
+
+    - name: Copy service template
+      template:
+        src: etcd.service.j2
+        dest: /etc/systemd/system/etcd.service
+        owner: root
+        group: root
+        mode: 0644
+      vars:
+        etcd_name: "{{ansible_hostname}}"
+        etcd_host_ip: "{{ ansible_default_ipv4.address }}"
+
+    - name: Reload daemon
+      command: systemctl daemon-reload
+
+    - name: Start etcd service
+      systemd:
+        name: etcd.service
+        state: started
+        enabled: yes
+
+    - name: View member list
+      command: etcdctl member list --write-out=table
+      register: etcd_member_list
+
+    - name: Print member list
+      debug:
+        msg: "{{ etcd_member_list.stdout }}"
+
+    # sudo sh -c 'echo "deb https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
+    # wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo apt-key add -
+    # sudo apt-get update
+    # sudo apt-get -y install postgresql
+    #
+
+    - name: Add entry to pdgd.list in sources
+      lineinfile:
+        path: /etc/apt/sources.list.d/pgdg.list
+        line: "deb https://apt.postgresql.org/pub/repos/apt {{ansible_distribution_release}}-pgdg main"
+        create: yes
+        owner: root
+        group: root
+        mode: 0644
+
+    - name: Ensure apt key is added
+      apt_key:
+        url: https://www.postgresql.org/media/keys/ACCC4CF8.asc
+        state: present
+
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+
+    - name: Install postgresql
+      apt:
+        name: postgresql
+        state: present
+
+    - name: Disable and stop postgresql service
+      service:
+        name: postgresql
+        state: stopped
+        enabled: false
+
+    - name: Install patroni
+      apt:
+        name: patroni
+        state: present
+
+    - name: Install python3-etcd
+      apt:
+        name: python3-etcd
+        state: present
+
+    - name: Create patroni systemd entry
+      template:
+        src: patroni.service.j2
+        dest: /etc/systemd/system/patroni.service
+        owner: root
+        group: root
+        mode: 0644
+
+    - name: Reload Daemon
+      systemd:
+        daemon_reload: yes
+
+    - name: Enable patroni service
+      systemd:
+        name: patroni.service
+        state: started
+        enabled: yes
+
+    - name: Find HC Volume numeric ID
+      shell: "ls /dev/disk/by-id | grep '^scsi-0HC_Volume_' | sed 's/^scsi-0HC_Volume_//' | head -n 1"
+      register: hc_volume_id
+      failed_when: hc_volume_id.stdout == ""
+
+    - name: Print HC_VOLUME id
+      debug:
+        msg: "{{ hc_volume_id.stdout }}"
+
+    - name: Ensure mount line exists in fstab
+      lineinfile:
+        path: /etc/fstab
+        # echo "/dev/disk/by-id/scsi-0HC_Volume_XXX /mnt/HC_VOLUME
+        line: "/dev/disk/by-id/scsi-0HC_Volume_{{ hc_volume_id.stdout }} /mnt/HC_VOLUME ext4 discard,nofail,defaults 0 0"
+        state: present
+
+    - name: Ensure mount point exists
+      file:
+        path: /mnt/HC_VOLUME
+        state: directory
+        owner: postgres
+        group: postgres
+        mode: 0755
+
+    - name: Reload systemd
+      command: systemctl daemon-reload
+
+    - name: mount all
+      command: mount -a
+
+    - name: Register hosts array 1:2379,2:2379,3:2379
+      set_fact:
+        etcd_hosts: >-
+          {% for host in groups['db'] %}{{ host }}:2379{% if not loop.last %},{% endif %}{% endfor %}
+
+    - name: Create Patroni Log Directory
+      file:
+        path: /etc/patroni/logs
+        state: directory
+        owner: postgres
+        group: postgres
+        mode: 0777
+
+    - name: Set Patroni config
+      template:
+        src: patroni.yml.j2
+        dest: /etc/patroni/config.yml
+        owner: postgres
+        group: postgres
+        mode: 0644
+
+    - name: Ensure data directory exists
+      file:
+        path: "{{ data_dir }}"
+        state: directory
+        owner: postgres
+        group: postgres
+        mode: 0700
+
+    - name: Ensure bin directory exists
+      file:
+        path: "{{ bin_dir }}"
+        state: directory
+        owner: postgres
+        group: postgres
+        mode: 0755
+
+    - name: Start Patroni service
+      service:
+        name: patroni
+        state: started
+        enabled: yes
+
+    - name: Register patroni members list
+      command: patronictl -c /etc/patroni/config.yml list
+      register: patroni_members_list
+
+    - name: Show patroni members list
+      debug:
+        var: patroni_members_list.stdout_lines

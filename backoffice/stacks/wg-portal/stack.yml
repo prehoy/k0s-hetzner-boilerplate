@@ -1,0 +1,36 @@
+# wg-portal v2 — WireGuard admin UI, managing the host wg0 interface.
+# Runs on the host network (Swarm attaches the built-in external `host` network) with NET_ADMIN
+# so wgctrl can drive the kernel wg0 directly. Because it's host-networked it can't also sit on
+# the traefik-public overlay, so Traefik routes to it via the file provider
+# (stacks/traefik/dynamic/wg-portal.yml -> http://172.18.0.1:8888). UI on :8888, metrics :8787;
+# both are kept off the public IP by the backoffice UFW default-deny.
+version: "3.8"
+
+services:
+  wg-portal:
+    image: wgportal/wg-portal:v2.3.1
+    cap_add:
+      - NET_ADMIN
+    volumes:
+      - /etc/wireguard:/etc/wireguard
+      - wg-portal-data:/app/data
+      # absolute path: Swarm bind mounts are resolved by dockerd. config.yaml is SOPS-decrypted
+      # from config.yaml.sops by the reconciler before deploy (holds admin/session/csrf secrets).
+      - /opt/simusa-infra/backoffice/stacks/wg-portal/config.yaml:/app/config/config.yaml:ro
+    networks:
+      - hostnet
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
+
+networks:
+  # the built-in host network, referenced as external so the task runs in the host netns
+  hostnet:
+    external: true
+    name: host
+
+volumes:
+  wg-portal-data:

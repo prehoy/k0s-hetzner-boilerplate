@@ -1,0 +1,44 @@
+# node-exporter — host CPU/mem/disk/net/filesystem metrics, one pod per node (DaemonSet).
+# hostNetwork + hostPID so it reads the real host. Discovered by Prometheus via the prometheus.io/scrape
+# pod annotation (see annotated-pods job). Tolerates control-plane so every node is covered.
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: node-exporter
+  namespace: monitoring
+spec:
+  selector:
+    matchLabels: { app: node-exporter }
+  template:
+    metadata:
+      labels: { app: node-exporter }
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9101"   # 9100 is taken by Traefik's metrics endpoint (hostNetwork)
+    spec:
+      hostNetwork: true
+      hostPID: true
+      tolerations:
+        - { operator: Exists }   # run on every node incl. tainted control-plane
+      securityContext: { runAsUser: 65534, runAsNonRoot: true }
+      containers:
+        - name: node-exporter
+          image: quay.io/prometheus/node-exporter:v1.8.2
+          args:
+            - --path.rootfs=/host/root
+            - --path.procfs=/host/proc
+            - --path.sysfs=/host/sys
+            - --collector.filesystem.mount-points-exclude=^/(dev|proc|sys|var/lib/docker/.+|var/lib/kubelet/.+)($|/)
+            - --web.listen-address=:9101
+          ports: [{ name: metrics, containerPort: 9101, hostPort: 9101 }]
+          volumeMounts:
+            - { name: proc, mountPath: /host/proc, readOnly: true }
+            - { name: sys, mountPath: /host/sys, readOnly: true }
+            - { name: root, mountPath: /host/root, mountPropagation: HostToContainer, readOnly: true }
+          resources:
+            requests: { cpu: "20m", memory: "32Mi" }
+            limits: { cpu: "1", memory: "128Mi" }   # 200m throttled >25% on scrape bursts; CPU is compressible so a high cap just stops throttling
+      volumes:
+        - { name: proc, hostPath: { path: /proc } }
+        - { name: sys, hostPath: { path: /sys } }
+        - { name: root, hostPath: { path: / } }

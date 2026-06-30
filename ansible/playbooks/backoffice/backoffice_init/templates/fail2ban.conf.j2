@@ -1,0 +1,19 @@
+[DEFAULT]
+# Ban hosts for 10 minutes by default
+bantime = 600
+# Number of failed attempts before ban
+maxretry = 5
+# Time window for counting failures
+findtime = 600
+# Log level
+loglevel = INFO
+# Ignore local IPs (your own network)
+ignoreip = 127.0.0.1/8 ::1
+
+[sshd]
+enabled = true
+port = ssh
+filter = sshd
+logpath = /var/log/auth.log
+maxretry = 5
+bantime = 3600

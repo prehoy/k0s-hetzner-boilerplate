@@ -1,0 +1,50 @@
+global_defs {
+    # NB: do NOT set enable_script_security — it makes keepalived refuse to run the notify script as
+    # root ("Failed to set default user ... ignoring"), so the failover (mount/export/alias-IP) never
+    # happens. Scripts are root-owned 0750; this mirrors the working LB keepalived config.
+    script_security 2
+}
+
+# Healthy enough to hold MASTER only while our local DRBD disk is UpToDate.
+vrrp_script chk_drbd {
+    script "/etc/keepalived/chk_drbd.sh"
+    interval 5
+    timeout 5
+    weight -60
+    fall 2
+    rise 2
+}
+
+vrrp_instance NFS_VI {
+    interface {{ private_iface }}
+    # Both start BACKUP so `nopreempt` is honored; priority elects nfs-0 (200) as initial master.
+    state BACKUP
+    priority {{ drbd_priority }}
+    advert_int 1
+
+    virtual_router_id {{ vrrp_router_id }}
+    unicast_src_ip {{ inventory_hostname }}
+    unicast_peer {
+{% for h in groups['nfs'] if h != inventory_hostname %}
+        {{ h }}
+{% endfor %}
+    }
+
+    authentication {
+        auth_type PASS
+        auth_pass {{ keepalived_password }}
+    }
+
+    track_script {
+        chk_drbd
+    }
+
+    # The VIP is a Hetzner alias IP moved via the Cloud API in the notify script (NOT a kernel VIP
+    # advertised by VRRP — that is not delivered on Hetzner's SDN). nopreempt avoids flapping the
+    # DRBD primary on a recovered node; promote deliberately.
+    nopreempt
+
+    notify_master "/etc/keepalived/nfs-failover.sh MASTER"
+    notify_backup "/etc/keepalived/nfs-failover.sh BACKUP"
+    notify_fault  "/etc/keepalived/nfs-failover.sh FAULT"
+}

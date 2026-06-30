@@ -1,0 +1,99 @@
+# Scripts + static config for the KeyDB Sentinel HA stack. No helm — plain manifests.
+apiVersion: v1
+kind: ConfigMap
+metadata: { name: keydb-ha-scripts, namespace: data }
+data:
+  keydb-start.sh: |
+    #!/bin/sh
+    # Start keydb as master (seed = pod-0 on bootstrap) or as replica of the Sentinel-elected master.
+    set -eu
+    PW="$KEYDB_PASSWORD"
+    FQDN="${POD_NAME}.keydb-ha.${POD_NAMESPACE}.svc.cluster.local"
+    SEED="keydb-ha-0.keydb-ha.${POD_NAMESPACE}.svc.cluster.local"
+    # Ask any sentinel (via the headless svc) who the master is; empty on first boot.
+    MASTER=$(keydb-cli -h keydb-ha -p 26379 sentinel get-master-addr-by-name keydb 2>/dev/null | head -1 || true)
+    set -- --requirepass "$PW" --masterauth "$PW" --appendonly yes \
+           --maxmemory-policy noeviction --replica-announce-ip "$FQDN"
+    if [ -n "$MASTER" ] && [ "$MASTER" != "$FQDN" ]; then
+      set -- "$@" --replicaof "$MASTER" 6379          # follow the current elected master
+    elif [ -z "$MASTER" ] && [ "$POD_NAME" != "keydb-ha-0" ]; then
+      set -- "$@" --replicaof "$SEED" 6379            # bootstrap: pod-0 is the seed master
+    fi
+    exec keydb-server /etc/keydb/keydb.conf "$@"
+  sentinel-start.sh: |
+    #!/bin/sh
+    # Sentinel sidecar (one per keydb pod => 3 sentinels, quorum 2).
+    set -eu
+    PW="$KEYDB_PASSWORD"
+    SEED="keydb-ha-0.keydb-ha.${POD_NAMESPACE}.svc.cluster.local"
+    MASTER=$(keydb-cli -h keydb-ha -p 26379 sentinel get-master-addr-by-name keydb 2>/dev/null | head -1 || true)
+    [ -z "$MASTER" ] && MASTER="$SEED"
+    cat > /tmp/sentinel.conf <<EOF
+    port 26379
+    sentinel resolve-hostnames yes
+    sentinel announce-hostnames yes
+    sentinel monitor keydb $MASTER 6379 2
+    sentinel auth-pass keydb $PW
+    sentinel down-after-milliseconds keydb 5000
+    sentinel failover-timeout keydb 60000
+    sentinel parallel-syncs keydb 1
+    EOF
+    exec keydb-sentinel /tmp/sentinel.conf
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: { name: keydb-ha-conf, namespace: data }
+data:
+  keydb.conf: |
+    port 6379
+    dir /data
+    server-threads 2
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: { name: keydb-ha-haproxy-tmpl, namespace: data }
+data:
+  # __PW__ is rendered at pod start by an init container (sed) from the keydb-secret — same pattern
+  # as twilio-api's pgcat-render. HAProxy routes only to the backend reporting role:master, so a
+  # Sentinel failover automatically moves traffic to the promoted replica.
+  haproxy.cfg.tmpl: |
+    global
+      daemon
+      maxconn 4096
+    # Runtime DNS via the pod's resolv.conf (coredns). Without this HAProxy resolves every server at
+    # startup and HARD-FAILS if a keydb pod isn't up yet; init-addr none lets it start and re-resolve.
+    resolvers k8s
+      parse-resolv-conf
+      resolve_retries 3
+      timeout resolve 1s
+      timeout retry  1s
+      hold valid 5s
+      hold nx 1s
+      hold timeout 1s
+      hold refused 1s
+      hold other 1s
+    defaults
+      mode tcp
+      timeout connect 4s
+      # Redis blocking commands (bee-queue BRPOPLPUSH) hold an idle connection while waiting for a job —
+      # often for minutes/hours. With short client/server timeouts HAProxy kills those connections and the
+      # consumer's blocking command aborts (-> unhandled error -> app crash). Keep them very long.
+      timeout client 24h
+      timeout server 24h
+      timeout check 3s       # don't flap the master DOWN if it's briefly busy (was failing at the 1s default)
+    frontend redis
+      bind *:6379
+      default_backend redis-master
+    backend redis-master
+      option tcp-check
+      tcp-check connect
+      tcp-check send AUTH\ __PW__\r\n
+      tcp-check expect string +OK
+      tcp-check send PING\r\n
+      tcp-check expect string +PONG
+      tcp-check send info\ replication\r\n
+      tcp-check expect string role:master
+      tcp-check send QUIT\r\n
+      server keydb-0 keydb-ha-0.keydb-ha.data.svc.cluster.local:6379 check inter 1s fall 3 rise 2 resolvers k8s init-addr none
+      server keydb-1 keydb-ha-1.keydb-ha.data.svc.cluster.local:6379 check inter 1s fall 3 rise 2 resolvers k8s init-addr none
+      server keydb-2 keydb-ha-2.keydb-ha.data.svc.cluster.local:6379 check inter 1s fall 3 rise 2 resolvers k8s init-addr none

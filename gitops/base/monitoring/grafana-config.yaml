@@ -1,0 +1,49 @@
+# Grafana provisioning (file-based = dashboards/datasources as code, no operator, no sidecar).
+#  - datasource: the Prometheus we run, set as default.
+#  - dashboard provider: load every .json mounted under /var/lib/grafana/dashboards.
+# To add a dashboard: drop its JSON into grafana-dashboards.yaml (a ConfigMap) and it appears. Import
+# community boards (e.g. node-exporter-full 1860) by pasting their JSON in the same way.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-datasources
+  namespace: monitoring
+data:
+  datasources.yaml: |
+    apiVersion: 1
+    datasources:
+      - name: Prometheus
+        uid: prometheus          # fixed uid so provisioned dashboards (incl. community 1860) bind to it
+        type: prometheus
+        access: proxy
+        url: http://prometheus:9090
+        isDefault: true
+      # Translator usage metrics live in Postgres (the apps expose no /metrics). Read-only role
+      # 'grafana_ro' (SELECT on usage tables only). Point at the Patroni REPLICA (:5433) so dashboard
+      # queries never load the primary. Password from env (grafana-pg-datasource SealedSecret).
+      # lang_processing = cross-engine aggregate; the rest are per-engine app DBs (UsageLog/Usage).
+      - { name: "tr-lang_processing",    uid: pg-lang-processing,    type: postgres, url: "haproxy-patroni.databases:5433", user: grafana_ro, database: lang_processing,    jsonData: { sslmode: disable, postgresVersion: 1600, maxOpenConns: 4, timescaledb: false }, secureJsonData: { password: "$GF_PG_RO_PASSWORD" } }
+      - { name: "tr-google_translate",   uid: pg-google-translate,   type: postgres, url: "haproxy-patroni.databases:5433", user: grafana_ro, database: google_translate,   jsonData: { sslmode: disable, postgresVersion: 1600, maxOpenConns: 4, timescaledb: false }, secureJsonData: { password: "$GF_PG_RO_PASSWORD" } }
+      - { name: "tr-deepl_translate",    uid: pg-deepl-translate,    type: postgres, url: "haproxy-patroni.databases:5433", user: grafana_ro, database: deepl_translate,    jsonData: { sslmode: disable, postgresVersion: 1600, maxOpenConns: 4, timescaledb: false }, secureJsonData: { password: "$GF_PG_RO_PASSWORD" } }
+      - { name: "tr-openai_translate",   uid: pg-openai-translate,   type: postgres, url: "haproxy-patroni.databases:5433", user: grafana_ro, database: openai_translate,   jsonData: { sslmode: disable, postgresVersion: 1600, maxOpenConns: 4, timescaledb: false }, secureJsonData: { password: "$GF_PG_RO_PASSWORD" } }
+      - { name: "tr-hd_translate",       uid: pg-hd-translate,       type: postgres, url: "haproxy-patroni.databases:5433", user: grafana_ro, database: hd_translate,       jsonData: { sslmode: disable, postgresVersion: 1600, maxOpenConns: 4, timescaledb: false }, secureJsonData: { password: "$GF_PG_RO_PASSWORD" } }
+      - { name: "tr-hd_google_translate",uid: pg-hd-google-translate,type: postgres, url: "haproxy-patroni.databases:5433", user: grafana_ro, database: hd_google_translate,jsonData: { sslmode: disable, postgresVersion: 1600, maxOpenConns: 4, timescaledb: false }, secureJsonData: { password: "$GF_PG_RO_PASSWORD" } }
+      - { name: "tr-translator",         uid: pg-translator,         type: postgres, url: "haproxy-patroni.databases:5433", user: grafana_ro, database: translator,         jsonData: { sslmode: disable, postgresVersion: 1600, maxOpenConns: 4, timescaledb: false }, secureJsonData: { password: "$GF_PG_RO_PASSWORD" } }
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-provider
+  namespace: monitoring
+data:
+  provider.yaml: |
+    apiVersion: 1
+    providers:
+      - name: default
+        orgId: 1
+        folder: ""
+        type: file
+        disableDeletion: false
+        editable: true
+        options:
+          path: /var/lib/grafana/dashboards

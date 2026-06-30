@@ -1,0 +1,73 @@
+# MongoDB — HyperDX app metadata (dashboards, alerts, saved searches, users). Single replica, NFS PVC.
+apiVersion: v1
+kind: Service
+metadata:
+  name: mongodb
+  namespace: observability
+spec:
+  clusterIP: None
+  selector:
+    app: mongodb
+  ports:
+    - { name: mongo, port: 27017, targetPort: 27017 }
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mongodb
+  namespace: observability
+spec:
+  serviceName: mongodb
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mongodb
+  template:
+    metadata:
+      labels:
+        app: mongodb
+    spec:
+      # Pin to permanent workers (node-pool=static) — off autoscaled cas-pool nodes the
+      # cluster-autoscaler culls, and off control-plane. See clickhouse.yaml for the rationale.
+      # Pinned to the dedicated observability node (worker-3) — see clickhouse.yaml.
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: node-pool
+                    operator: In
+                    values: ["observability"]
+      tolerations:
+        - { key: dedicated, operator: Equal, value: observability, effect: NoSchedule }
+      securityContext:
+        fsGroup: 999         # mongodb uid/gid in the official image
+      containers:
+        - name: mongodb
+          image: mongo:5.0.33-focal
+          args: ["--bind_ip_all"]
+          env:
+            - name: MONGO_INITDB_ROOT_USERNAME
+              value: hyperdx
+            - name: MONGO_INITDB_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: hyperdx-secrets
+                  key: MONGODB_PASSWORD
+          ports:
+            - { name: mongo, containerPort: 27017 }
+          volumeMounts:
+            - { name: data, mountPath: /data/db }
+          readinessProbe:
+            exec:
+              command: ["mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+            initialDelaySeconds: 20
+            periodSeconds: 15
+            timeoutSeconds: 8
+          resources:
+            requests: { cpu: "100m", memory: "256Mi" }
+            limits: { cpu: "500m", memory: "512Mi" }
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: mongodb-data

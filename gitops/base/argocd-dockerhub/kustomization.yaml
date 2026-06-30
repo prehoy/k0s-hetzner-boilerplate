@@ -1,0 +1,7 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+# Docker Hub pull credential in the argocd namespace. ArgoCD's repo-server values reference
+# imagePullSecrets: [dockerhub-cred] (Docker Hub rate-limit avoidance); without it the repo-server
+# logs FailedToRetrieveImagePullSecret. Sealed so a cluster rebuild restores it automatically.
+resources:
+  - sealedsecret.yaml

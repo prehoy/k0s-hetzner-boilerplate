@@ -1,0 +1,14 @@
+[Unit]
+Description=Patroni PostgreSQL HA Cluster
+After=network.target
+
+[Service]
+Type=simple
+User=postgres
+ExecStart=/bin/patroni /etc/patroni/config.yml
+Restart=on-failure
+KillSignal=SIGINT
+TimeoutSec=30
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,60 @@
+---
+- name: Setup Backoffice Server
+  hosts: backoffice
+  become: true
+  gather_facts: true
+  vars:
+    server_endpoint: "{{ansible_eth0.ipv4.address}}"
+    server_port: 51820
+    client_address: "10.200.200.2/24"
+    wg_address: "10.200.200.1/24"
+
+  tasks:
+    - name: Start
+      debug:
+        msg: "This host is {{ansible_hostname}}"
+    - name: Update packages
+      apt:
+        update_cache: yes
+
+    # swarmpit/swarmpit:1.9 hardcodes Docker API v1.30 and ignores DOCKER_API_VERSION; Docker 25+
+    # defaults the daemon min API to 1.44 and rejects it ("client version 1.30 is too old"). Lower the
+    # daemon floor so the legacy client is accepted. Only takes effect on dockerd restart.
+    - name: Docker daemon — accept legacy API version (for swarmpit)
+      when: ansible_facts.services['docker.service'] is defined
+      copy:
+        dest: /etc/systemd/system/docker.service.d/10-min-api-version.conf
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          [Service]
+          Environment=DOCKER_MIN_API_VERSION=1.24
+      notify: restart docker
+
+    - name: Wireguard Setup
+      import_tasks: tasks/wireguard.yaml
+
+    - name: Configure Firewall
+      import_tasks: tasks/firewall.yaml
+
+    - name: Configure Fail2ban
+      import_tasks: tasks/fail2ban.yaml
+
+    - name: Print Client Configuration File
+      command: cat /etc/wireguard/client.conf
+      register: client_conf
+      ignore_errors: true
+
+    - name: Save Client Configuration to Control Node
+      fetch:
+        src: /etc/wireguard/client.conf
+        dest: ../../wireguard.conf
+        flat: yes
+
+  handlers:
+    - name: restart docker
+      systemd:
+        name: docker
+        state: restarted
+        daemon_reload: true

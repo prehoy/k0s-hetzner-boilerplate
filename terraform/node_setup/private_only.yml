@@ -1,0 +1,23 @@
+#cloud-config
+write_files:
+  - path: /etc/systemd/network/10-enp7s0.network
+    content: |
+      # Custom network configuration added by cloud-init
+      [Match]
+      Name=enp7s0
+
+      [Network]
+      DHCP=yes
+      Gateway=10.0.0.1
+    append: true
+
+  - path: /etc/systemd/resolved.conf
+    content: |
+      [Resolve]
+      DNS=1.1.1.1 1.0.0.1
+      FallbackDNS=8.8.8.8
+    append: true
+
+runcmd:
+  - apt remove -y hc-utils
+  - reboot

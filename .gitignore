@@ -1,0 +1,34 @@
+# --- Terraform ---
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+.terraform/
+.terraform.lock.hcl
+crash.log
+tf_outputs.json
+errored.tfstate
+override.tf
+override.tf.json
+
+# --- Secrets / keys / credentials ---
+*.pub
+!*.pub.example
+.hcloud_token
+wireguard.conf
+*kubeconfig*.conf
+secrets.yml
+age.key
+*.age
+sealing-key.key
+sealing-key.secret.yaml
+*.plain.env
+
+# SOPS-decrypted plaintext (the *.sops ciphertext is committed; the decrypted output is not)
+backoffice/stacks/*/cf_dns_api_token
+backoffice/stacks/wg-portal/config.yaml
+backoffice/stacks/*/*.env
+
+# --- misc ---
+*.retry
+.DS_Store

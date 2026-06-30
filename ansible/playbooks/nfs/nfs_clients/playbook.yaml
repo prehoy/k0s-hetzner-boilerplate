@@ -1,0 +1,61 @@
+- name: Install NFS client packages
+  hosts:
+    - k0s_controllers
+    - k0s_workers
+    - backoffice
+  become: true
+  vars:
+    # Mount the HA VIP (alias IP that floats between nfs-0/nfs-1), never a single node's real IP.
+    nfs_server_ip: "10.0.0.199"
+
+  tasks:
+    - name: Ensure apt status
+      apt:
+        update_cache: yes
+        upgrade: yes
+
+    - name: Install NFS client packages
+      apt:
+        name: nfs-common
+        state: present
+
+    - name: Ensure shared folder exists
+      file:
+        path: /shared
+        state: directory
+        owner: root
+        group: root
+        mode: 0755
+      ignore_errors: true
+
+    # Drop any stale /shared fstab entry pointing at a node's real IP (e.g. the pre-HA 10.0.0.100),
+    # so we don't end up with a duplicate line + an automount pinned to the wrong server.
+    - name: Remove stale /shared fstab entries (non-VIP)
+      lineinfile:
+        path: /etc/fstab
+        regexp: '^(?!{{ nfs_server_ip | regex_escape }}:).*\s/shared\s+nfs\s'
+        state: absent
+
+    - name: Create FSTAB entry for shared folder with delayed network mount
+      lineinfile:
+        path: /etc/fstab
+        line: "{{ nfs_server_ip }}:/mnt/nfs /shared nfs defaults,_netdev,nofail,x-systemd.automount 0 0"
+        state: present
+
+    - name: Reload systemd daemon
+      systemd:
+        daemon_reload: yes
+
+    # Tear down the live automount/mount so the next access re-mounts from the (now correct) fstab VIP.
+    - name: Stop the /shared automount unit
+      systemd:
+        name: shared.automount
+        state: stopped
+      ignore_errors: true
+
+    - name: Unmount if mounted /shared
+      shell: umount -l /shared
+      ignore_errors: true
+
+    - name: Re-arm automounts from fstab
+      shell: systemctl daemon-reload && mount -a

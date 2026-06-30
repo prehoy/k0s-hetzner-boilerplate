@@ -1,0 +1,139 @@
+# Add k0s worker nodes — IDEMPOTENT & SAFE BY DEFAULT.
+#
+# Auto mode: targets the whole [k0s_workers] group but only installs+joins nodes that are NOT
+# already active workers; nodes already in the cluster are skipped (no reset, no-op). So adding a
+# node = put it in inventory + run this, no --limit gymnastics, and re-running never harms live
+# workers.
+#
+#   ansible-playbook -i inventory playbooks/k0s_main/add_workers/playbook.yaml
+#
+# Rebuild/rejoin a specific node (DESTRUCTIVE — wipes it with `k0s reset`): target it and pass the
+# flag. Use --limit so you don't reset more than intended:
+#
+#   ansible-playbook -i inventory playbooks/k0s_main/add_workers/playbook.yaml \
+#       --limit '10.0.0.3,10.0.0.55' -e force_reset=true
+#
+# (10.0.0.3 = controllers[0], needed to mint the join token.)
+- name: Add k0s workers (idempotent)
+  hosts:
+    - k0s_controllers[0]
+    - k0s_workers
+  become: true
+  gather_facts: true
+  vars:
+    internal_ip: "{{ ansible_enp7s0.ipv4.address }}"
+    k0s_version: "v1.34.3+k0s.0"
+    force_reset: false   # -e force_reset=true to stop+reset+rejoin TARGETED workers
+  tasks:
+    # ---- assess each worker (skip the controller; it only mints the token) ----
+    - name: Assess worker state
+      when: inventory_hostname != groups['k0s_controllers'][0]
+      block:
+        - name: Check for k0s binary
+          stat:
+            path: /usr/local/bin/k0s
+          register: k0s_bin
+
+        - name: Check k0sworker service state
+          command: systemctl is-active k0sworker
+          register: k0sworker_state
+          changed_when: false
+          failed_when: false
+
+        - name: Determine whether this node is already an active worker
+          set_fact:
+            already_joined: "{{ k0sworker_state.stdout == 'active' }}"
+
+        - name: Report nodes that will be skipped
+          debug:
+            msg: "{{ inventory_hostname }} is already an active k0s worker — skipping (use -e force_reset=true to rebuild it)"
+          when: already_joined and not (force_reset | bool)
+
+    # ---- token: minted on the main controller, only consumed by nodes that need joining ----
+    - name: Generate a worker join token on the main controller
+      command: k0s token create --role=worker --expiry=1h
+      register: token_output
+      changed_when: false
+      run_once: true
+      when: inventory_hostname == groups['k0s_controllers'][0]
+
+    # The token embeds the minting controller's address (a single controller). Repoint it at the
+    # control-plane VIP so the worker's kubelet talks to the HA endpoint — one controller dying must
+    # never cut workers off (that turned a node wedge into a cluster-wide outage). The apiserver cert
+    # includes the VIP (spec.api.sans). See docs/RUNBOOK-control-plane-lb.md.
+    - name: Repoint the worker token at the control-plane VIP (HA join)
+      shell: >-
+        set -o pipefail;
+        echo '{{ token_output.stdout }}' | base64 -d | gunzip
+        | sed 's#https://[0-9.]\+:6443#https://{{ control_plane_vip | default("10.0.0.240") }}:6443#'
+        | gzip | base64 -w0
+      args: { executable: /bin/bash }
+      register: token_vip
+      changed_when: false
+      run_once: true
+      when: inventory_hostname == groups['k0s_controllers'][0]
+
+    - name: Stash the worker token (VIP-pointed)
+      set_fact:
+        k0s_worker_token: "{{ hostvars[groups['k0s_controllers'][0]].token_vip.stdout }}"
+      run_once: true
+
+    # ---- install + join only the nodes that need it ----
+    - name: Install and join worker
+      when:
+        - inventory_hostname != groups['k0s_controllers'][0]
+        - (not already_joined) or (force_reset | bool)
+      block:
+        - name: Update package lists and upgrade
+          apt:
+            update_cache: true
+            upgrade: true
+
+        # NFS-backed PVs (clickhouse, mongodb, keydb, ...) won't mount without the client
+        # (mount.nfs -> exit 32). The base user_data doesn't install it; do it here.
+        - name: Ensure NFS client is present
+          apt:
+            name: nfs-common
+            state: present
+
+        # only with force_reset, and only if k0s is actually present
+        - name: Stop k0s (force_reset)
+          command: k0s stop
+          when: (force_reset | bool) and k0s_bin.stat.exists
+          failed_when: false
+
+        - name: Reset k0s (force_reset)
+          command: k0s reset
+          when: (force_reset | bool) and k0s_bin.stat.exists
+          failed_when: false
+
+        - name: Download k0s binary if missing
+          get_url:
+            url: "https://github.com/k0sproject/k0s/releases/download/{{ k0s_version }}/k0s-{{ k0s_version }}-amd64"
+            dest: /usr/local/bin/k0s
+            mode: "0755"
+          when: not k0s_bin.stat.exists or (force_reset | bool)
+
+        - name: Write the worker token
+          copy:
+            content: "{{ k0s_worker_token }}"
+            dest: /tmp/k0s-worker.token
+            owner: root
+            group: root
+            mode: "0600"
+
+        # node-pool=static distinguishes these permanent TF-provisioned workers from autoscaled
+        # cas-pool nodes, so pinned stateful workloads (ClickHouse/MongoDB) can require it and never
+        # land on a node the cluster-autoscaler can cull. See prod/gitops/base/hyperdx/.
+        - name: Install k0s worker
+          command: k0s install worker --token-file /tmp/k0s-worker.token --kubelet-extra-args="--node-labels=node-pool=static"
+
+        - name: Start k0s
+          command: k0s start
+
+        # workers expose the kubelet on 10250 (they do NOT listen on 6443 — NLLB was dropped)
+        - name: Wait for the kubelet to come up
+          wait_for:
+            port: 10250
+            host: "{{ internal_ip }}"
+            timeout: 300

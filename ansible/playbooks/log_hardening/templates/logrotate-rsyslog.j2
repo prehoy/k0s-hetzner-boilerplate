@@ -1,0 +1,27 @@
+# Managed by Ansible (log_hardening playbook). Hardened rsyslog rotation: size-capped so a
+# log flood (e.g. a crash-looping component) can never fill the root disk again.
+# Rotated whenever a file exceeds {{ logrotate_maxsize }} OR daily, whichever comes first;
+# the logrotate.timer override makes logrotate run hourly so maxsize is enforced promptly.
+/var/log/syslog
+/var/log/mail.log
+/var/log/kern.log
+/var/log/auth.log
+/var/log/user.log
+/var/log/cron.log
+/var/log/debug
+/var/log/messages
+{
+	# /var/log is group-writable on the k0s nodes, so logrotate needs an explicit su to rotate.
+	su root adm
+	rotate {{ logrotate_rotate }}
+	daily
+	maxsize {{ logrotate_maxsize }}
+	missingok
+	notifempty
+	compress
+	delaycompress
+	sharedscripts
+	postrotate
+		/usr/lib/rsyslog/rsyslog-rotate
+	endscript
+}

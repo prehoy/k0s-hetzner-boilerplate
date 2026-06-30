@@ -1,0 +1,50 @@
+# Woodpecker CI — PROD. Server + agent in the ci-build namespace.
+# Moved off staging (2026-06-19) so CI no longer depends on the staging cluster.
+# DB = prod Patroni (via haproxy-patroni.databases:5432, FRESH woodpecker db — staging
+# build history NOT migrated). Secrets (DB datasource, GitHub OAuth client/secret, agent
+# secret) come from the sealed `woodpecker-secrets` via extraSecretNamesForEnvFrom —
+# Woodpecker's own secret store is NOT used; pipeline steps reference k8s SealedSecrets
+# directly (allow-native-secrets).
+
+server:
+  env:
+    WOODPECKER_HOST: 'https://ci.example.com'
+    WOODPECKER_ADMIN: 'misterkuka'            # GitHub admin (bypasses the OPEN/ORGS gate)
+    WOODPECKER_OPEN: 'true'                    # self-registration ON
+    WOODPECKER_ORGS: 'YOUR_GITHUB_ORG'        # restrict login to this GitHub org
+    #
+    # 2026-06-16 staging incident: a user (FuchsReinicke) with an empty access_token made the
+    # per-login org-membership check (/user/orgs) 401-loop and exhaust the shared GitHub rate
+    # limit -> all logins down. If it recurs, find the user with a 401/empty token (woodpecker
+    # DB `users`) and delete it, then restart the server.
+    WOODPECKER_GITHUB: 'true'
+    WOODPECKER_DATABASE_DRIVER: 'postgres'
+  # Inject WOODPECKER_DATABASE_DATASOURCE, WOODPECKER_GITHUB_CLIENT,
+  # WOODPECKER_GITHUB_SECRET, WOODPECKER_AGENT_SECRET (keys == env var names).
+  extraSecretNamesForEnvFrom:
+    - woodpecker-secrets
+  # The agent template always envFrom's `woodpecker-default-agent-secret`, so it must
+  # exist — let the chart create it. Our WOODPECKER_AGENT_SECRET in woodpecker-secrets
+  # is listed last in the agent's envFrom (so it wins) and is the server's only source,
+  # so both sides share OUR stable value regardless of the chart's generated one.
+  createAgentSecret: true
+  persistentVolume:
+    storageClass: nfs-client
+    size: 1Gi
+
+agent:
+  replicaCount: 1
+  env:
+    WOODPECKER_SERVER: 'woodpecker-server:9000'
+    WOODPECKER_BACKEND: kubernetes
+    WOODPECKER_BACKEND_K8S_NAMESPACE: ci-build
+    WOODPECKER_BACKEND_K8S_STORAGE_CLASS: nfs-client
+    WOODPECKER_BACKEND_K8S_STORAGE_RWX: 'true'
+    # Let pipeline steps reference existing k8s secrets (dockerhub-cred, ci-infra-write-key).
+    WOODPECKER_BACKEND_K8S_ALLOW_NATIVE_SECRETS: 'true'
+    WOODPECKER_CONNECT_RETRY_COUNT: '3'
+  extraSecretNamesForEnvFrom:
+    - woodpecker-secrets       # shares WOODPECKER_AGENT_SECRET with the server
+  # Agent is stateless (config from env) — no PVC needed.
+  persistence:
+    enabled: false

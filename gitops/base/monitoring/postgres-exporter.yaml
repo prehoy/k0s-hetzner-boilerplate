@@ -1,0 +1,54 @@
+# postgres_exporter — Patroni/Postgres cluster metrics (connections, tx rate, cache hit, DB sizes,
+# deadlocks, replication lag, ...). Connects via the in-cluster haproxy-patroni primary (:5432) as the
+# read-only `postgres_exporter` role (pg_monitor). DSN is the postgres-exporter-secrets SealedSecret.
+# pg_stat_database covers ALL databases from the single `postgres` connection.
+# Scraped by Prometheus via the prometheus.io/scrape annotation (port 9187).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres-exporter
+  namespace: monitoring
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: postgres-exporter }
+  template:
+    metadata:
+      labels: { app: postgres-exporter }
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9187"
+    spec:
+      affinity:                       # off the 4GB control-plane nodes
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - { key: node-role.kubernetes.io/control-plane, operator: DoesNotExist }
+                  - { key: node-pool, operator: NotIn, values: ["burst"] }   # don't pin the ephemeral burst pool
+      securityContext: { runAsUser: 65534, runAsNonRoot: true }
+      containers:
+        - name: postgres-exporter
+          image: quay.io/prometheuscommunity/postgres-exporter:v0.16.0
+          args:
+            - --auto-discover-databases   # also emit per-database stats beyond the connected DB
+          envFrom:
+            - secretRef:
+                name: postgres-exporter-secrets   # DATA_SOURCE_NAME
+          ports:
+            - { name: metrics, containerPort: 9187 }
+          readinessProbe:
+            httpGet: { path: /, port: metrics }
+            initialDelaySeconds: 5
+          resources:
+            requests: { cpu: "20m", memory: "64Mi" }
+            limits: { cpu: "200m", memory: "256Mi" }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-exporter
+  namespace: monitoring
+spec:
+  selector: { app: postgres-exporter }
+  ports: [{ name: metrics, port: 9187, targetPort: metrics }]

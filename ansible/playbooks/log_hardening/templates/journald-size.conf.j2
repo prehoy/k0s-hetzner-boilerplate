@@ -1,0 +1,7 @@
+# Managed by Ansible (log_hardening playbook). Hard cap on the systemd journal + rate limiting,
+# so a chatty/crash-looping unit cannot grow the journal unbounded either.
+[Journal]
+SystemMaxUse={{ journald_max_use }}
+RuntimeMaxUse={{ journald_runtime_max_use }}
+RateLimitIntervalSec={{ journald_ratelimit_interval }}
+RateLimitBurst={{ journald_ratelimit_burst }}

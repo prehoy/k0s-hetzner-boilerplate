@@ -1,0 +1,28 @@
+- name: Install k0s on backoffice
+  hosts: backoffice
+  become: true
+  gather_facts: true
+  vars:
+    internal_ip: "{{ ansible_enp7s0.ipv4.address }}"
+  tasks:
+    - name: Update package lists and upgrade
+      apt:
+        update_cache: true
+        upgrade: true
+
+    - name: Configure Haproxy Backoffice
+      template:
+        src: ./templates/haproxy.cfg.j2
+        dest: /etc/haproxy/haproxy.cfg
+        mode: "0644"
+
+    - name: Enable Haproxy Service
+      service:
+        name: haproxy
+        state: started
+        enabled: true
+
+    - name: Restart Haproxy Service
+      service:
+        name: haproxy
+        state: restarted

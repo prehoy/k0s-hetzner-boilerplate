@@ -1,0 +1,14 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: gatus
+resources:
+  - namespace.yaml
+  - deployment.yaml
+  - service.yaml
+  - ingressroute.yaml
+  - sealedsecret.yaml
+# config.yaml → gatus-config (hash suffix auto-rolls the pod when the config changes)
+configMapGenerator:
+  - name: gatus-config
+    files:
+      - config.yaml

@@ -1,0 +1,7 @@
+# This module's state holds DB + S3 + Databasus-admin secrets — keep it OUT of git
+# (unlike the main staging/terraform, which commits tfstate).
+*.tfstate
+*.tfstate.*
+.terraform/
+.terraform.lock.hcl
+terraform.tfvars

@@ -1,0 +1,43 @@
+# One log agent per node — tails /var/log/pods and ships to the central collector. No app changes.
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: otel-logs-agent
+  namespace: observability
+spec:
+  selector:
+    matchLabels:
+      app: otel-logs-agent
+  template:
+    metadata:
+      labels:
+        app: otel-logs-agent
+    spec:
+      serviceAccountName: otel-logs-agent
+      # read node log files (root-owned) + run on every node incl. control-plane
+      securityContext:
+        runAsUser: 0
+      tolerations:
+        - operator: Exists
+      containers:
+        - name: otel-collector
+          image: otel/opentelemetry-collector-contrib:0.119.0
+          args: ["--config=/etc/otel/config.yaml"]
+          env:
+            - name: K8S_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          volumeMounts:
+            - { name: config, mountPath: /etc/otel }
+            - { name: varlogpods, mountPath: /var/log/pods, readOnly: true }
+          resources:
+            requests: { cpu: "50m", memory: "256Mi" }
+            limits: { cpu: "1", memory: "512Mi" }   # cpu 300m throttled >25% on busy log nodes (CPU compressible, high cap is free); 256Mi OOMKilled, mem_limiter soft-caps 400MiB
+      volumes:
+        - name: config
+          configMap:
+            name: otel-logs-agent
+        - name: varlogpods
+          hostPath:
+            path: /var/log/pods

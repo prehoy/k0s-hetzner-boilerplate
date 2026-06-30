@@ -1,0 +1,13 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: ci-build
+
+resources:
+  - ingressroute.yaml
+  - woodpecker-sealedsecret.yaml
+  - woodpecker-slack-sealedsecret.yaml  # native secret mounted by pipelines (build notifications)
+  # Build infra the pipelines need (buildkitd at buildkitd.ci-build:1234 + native secrets the
+  # build mounts: dockerhub push creds, SSH key to commit the image bump back to simusa-infra).
+  - buildkitd.yaml
+  - dockerhub-cred-sealedsecret.yaml
+  - ci-infra-write-key-sealedsecret.yaml

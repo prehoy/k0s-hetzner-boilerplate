@@ -1,0 +1,245 @@
+# Configure the HA NFS cluster: the nfs-0/nfs-1 pair + a diskless DRBD quorum tiebreaker (backoffice).
+#
+# DRBD (protocol C) synchronously replicates a dedicated volume between nfs-0/nfs-1; a diskless
+# tiebreaker provides the 3rd quorum vote (no data) so a partitioned node suspends I/O instead of
+# diverging. keepalived owns failover on the pair. The export VIP 10.0.0.199 is a Hetzner *alias IP*
+# moved via the Cloud API on master transition (a plain VRRP virtual_ipaddress is NOT delivered on
+# Hetzner's SDN). NFS data lives on /dev/drbd0, mounted only on the keepalived MASTER.
+#
+# NON-DESTRUCTIVE: installs packages + writes config/scripts only. The one-time DRBD bring-up
+# (create-md, first sync, mkfs.ext4, data migration) and client cut-over are guided steps in
+# docs/RUNBOOK-nfs-ha.md, so we never reformat a live volume by accident.
+#
+#   ansible-playbook -i inventory playbooks/nfs/nfs_ha/playbook.yaml -e hcloud_token=$HCLOUD_TOKEN
+
+# ---------------------------------------------------------------------------
+# Play 1: DRBD on every member (pair + diskless tiebreaker) — shared r0.res.
+# ---------------------------------------------------------------------------
+- name: DRBD common (all members)
+  hosts: nfs_cluster
+  become: true
+  gather_facts: true
+  vars:
+    drbd_resource: r0
+    drbd_device: /dev/drbd0
+    drbd_port: 7788
+  tasks:
+    - name: Require drbd_volume_id on disk-ful members
+      assert:
+        that:
+          - drbd_volume_id is defined
+          - drbd_volume_id | string != "REPLACE_ME"
+        fail_msg: "Set drbd_volume_id in inventory from `terraform output nfs_drbd_volume_ids`."
+      when: not (drbd_diskless | default(false) | bool)
+
+    # Ubuntu 24.04 ships only DRBD 8.4 (in-tree, no node-id/quorum). DRBD9 (3-node + diskless quorum
+    # tiebreaker) comes from the LINBIT PPA, built against the running kernel via dkms.
+    - name: Ensure add-apt-repository is available
+      apt:
+        name: software-properties-common
+        update_cache: true
+        state: present
+
+    - name: Add LINBIT DRBD9 PPA
+      apt_repository:
+        repo: ppa:linbit/linbit-drbd9-stack
+        state: present
+        update_cache: true
+
+    - name: Install DRBD9 (utils + dkms module) and kernel headers
+      apt:
+        name:
+          - "linux-headers-{{ ansible_kernel }}"
+          # Meta-package: pulls headers matching the kernel meta on every upgrade, so dkms rebuilds
+          # the DRBD module for a NEW kernel BEFORE a reboot. (Without it, a reboot into a fresh
+          # kernel leaves `modprobe drbd` failing and the node can't rejoin — hit on 2026-06-14.)
+          - linux-headers-generic
+          - dkms
+          - drbd-utils
+          - drbd-dkms
+        update_cache: true
+        state: present
+
+    - name: Load the DRBD kernel module now and on boot
+      block:
+        - name: modprobe drbd
+          community.general.modprobe:
+            name: drbd
+            state: present
+        - name: Persist drbd module
+          copy:
+            content: "drbd\n"
+            dest: /etc/modules-load.d/drbd.conf
+            mode: "0644"
+
+    - name: Write the shared DRBD resource definition
+      template:
+        src: drbd-r0.res.j2
+        dest: "/etc/drbd.d/{{ drbd_resource }}.res"
+        owner: root
+        group: root
+        mode: "0644"
+
+    # The packaged drbd init script is a no-runlevel LSB stub systemd can't enable, so ship our own
+    # oneshot that runs `drbdadm up all` on boot — a rebooted node rejoins/resyncs automatically
+    # instead of needing a manual `drbdadm up`.
+    - name: Install drbd-up boot unit
+      copy:
+        dest: /etc/systemd/system/drbd-up.service
+        mode: "0644"
+        content: |
+          [Unit]
+          Description=Bring up DRBD resources
+          After=systemd-modules-load.service network-online.target
+          Wants=network-online.target
+          [Service]
+          Type=oneshot
+          RemainAfterExit=yes
+          # `up all` fails (new-minor exit 10) if the resource is already partially up after a
+          # reboot; fall back to `adjust all` (idempotent reconcile) so boot auto-rejoin is reliable.
+          ExecStart=/bin/sh -c '/sbin/drbdadm up all || /sbin/drbdadm adjust all'
+          [Install]
+          WantedBy=multi-user.target
+      register: drbd_up_unit
+
+    - name: Enable drbd-up.service on boot
+      systemd:
+        name: drbd-up.service
+        enabled: true
+        daemon_reload: "{{ drbd_up_unit.changed }}"
+
+# ---------------------------------------------------------------------------
+# Play 2: NFS + keepalived on the active pair only (NOT the tiebreaker).
+# ---------------------------------------------------------------------------
+- name: NFS server + keepalived failover (pair)
+  hosts: nfs
+  become: true
+  gather_facts: true
+  vars:
+    vip: "10.0.0.199"
+    drbd_resource: r0
+    drbd_device: /dev/drbd0
+    drbd_port: 7788
+    mount_point: /mnt/nfs
+    private_iface: enp7s0
+    net_name: mainNet
+    vrrp_router_id: 32
+    keepalived_password: CHANGEME_nfs_keepalived
+    # hcloud_token: must be passed via -e or a vault file (do not commit it)
+  tasks:
+    - name: Require hcloud_token (alias-IP failover needs the Cloud API)
+      assert:
+        that:
+          - hcloud_token is defined
+          - hcloud_token | length > 0
+        fail_msg: "Pass -e hcloud_token=... (the Hetzner Cloud API token)."
+
+    - name: Detect whether DRBD is already brought up (gates auto-starting keepalived)
+      command: drbdadm dstate {{ drbd_resource }}
+      register: drbd_dstate
+      changed_when: false
+      failed_when: false
+
+    - name: Decide if keepalived may run
+      set_fact:
+        # Only let keepalived start/restart once DRBD is live — otherwise its failover script could
+        # unmount the legacy live export on nfs-0. First run = false; bring DRBD up per the runbook,
+        # then start keepalived (or re-run this playbook) to arm failover.
+        drbd_ready: "{{ 'UpToDate' in (drbd_dstate.stdout | default('')) }}"
+
+    - name: Install packages (NFS server, keepalived, API tooling)
+      apt:
+        name:
+          - nfs-kernel-server
+          - keepalived
+          - jq
+          - curl
+        update_cache: true
+        state: present
+
+    - name: Tune NFS fs.file-max
+      ansible.posix.sysctl:
+        name: fs.file-max
+        value: "2097152"
+        sysctl_set: true
+        state: present
+        reload: true
+
+    - name: Tune sunrpc slots
+      ansible.posix.sysctl:
+        name: sunrpc.tcp_slot_table_entries
+        value: "128"
+        sysctl_set: true
+        state: present
+        reload: true
+
+    - name: Ensure mount point exists
+      file:
+        path: "{{ mount_point }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Write NFS exports
+      template:
+        src: exports.j2
+        dest: /etc/exports
+        owner: root
+        group: root
+        mode: "0644"
+
+    # nfsd should only run on the active node — keepalived's failover script starts/stops it.
+    - name: Do not start nfs-kernel-server at boot (keepalived controls it)
+      systemd:
+        name: nfs-kernel-server
+        enabled: false
+
+    - name: Install the failover script
+      template:
+        src: nfs-failover.sh.j2
+        dest: /etc/keepalived/nfs-failover.sh
+        owner: root
+        group: root
+        mode: "0750"
+
+    - name: Install the DRBD health-check script
+      copy:
+        content: |
+          #!/bin/bash
+          # Healthy enough to be MASTER only if our local DRBD disk is UpToDate.
+          drbdadm dstate {{ drbd_resource }} 2>/dev/null | grep -q '^UpToDate'
+        dest: /etc/keepalived/chk_drbd.sh
+        owner: root
+        group: root
+        mode: "0750"
+
+    - name: Write keepalived config
+      template:
+        src: keepalived.conf.j2
+        dest: /etc/keepalived/keepalived.conf
+        owner: root
+        group: root
+        mode: "0644"
+      notify: restart keepalived
+
+    - name: Enable keepalived at boot
+      systemd:
+        name: keepalived
+        enabled: true
+
+    - name: Note when keepalived is NOT auto-started (DRBD not up yet)
+      debug:
+        msg: >-
+          DRBD not yet UpToDate on {{ inventory_hostname }} — leaving keepalived stopped. Bring DRBD
+          up (docs/RUNBOOK-nfs-ha.md), then `systemctl start keepalived` (backup first, then master).
+      when: not (drbd_ready | bool)
+
+  handlers:
+    # Only (re)start keepalived once DRBD is live, so its failover script can't disturb the legacy
+    # live export during initial provisioning.
+    - name: restart keepalived
+      systemd:
+        name: keepalived
+        state: restarted
+      when: drbd_ready | bool

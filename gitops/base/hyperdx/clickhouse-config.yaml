@@ -1,0 +1,40 @@
+# ClickHouse users overlay (mounted at /etc/clickhouse-server/users.d/). Defines the two HyperDX
+# users; passwords are pulled from the SealedSecret via `from_env` so no plaintext lives here.
+#   - otelcollector: the OTel collector ingests (creates otel_* tables + INSERTs)
+#   - app:           HyperDX queries
+# (default user left stock — ClickHouse is a headless ClusterIP service inside the namespace only.)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: clickhouse-users
+  namespace: observability
+data:
+  hyperdx-users.xml: |
+    <clickhouse>
+      <!-- Bound per-query memory and spill big aggregations/sorts to disk, so dashboard queries
+           can't starve INSERTs on these tiny nodes (see clickhouse-mem.yaml). -->
+      <profiles>
+        <default>
+          <max_memory_usage>3000000000</max_memory_usage>
+          <max_bytes_before_external_group_by>700000000</max_bytes_before_external_group_by>
+          <max_bytes_before_external_sort>700000000</max_bytes_before_external_sort>
+        </default>
+      </profiles>
+      <users>
+        <app>
+          <password from_env="CH_APP_PASSWORD"/>
+          <networks><ip>::/0</ip></networks>
+          <profile>default</profile>
+          <quota>default</quota>
+          <access_management>1</access_management>
+          <named_collection_control>1</named_collection_control>
+        </app>
+        <otelcollector>
+          <password from_env="CH_OTEL_PASSWORD"/>
+          <networks><ip>::/0</ip></networks>
+          <profile>default</profile>
+          <quota>default</quota>
+          <access_management>1</access_management>
+        </otelcollector>
+      </users>
+    </clickhouse>

@@ -1,0 +1,698 @@
+{
+  "title": "Translators",
+  "uid": "translators",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "graphTooltip": 1,
+  "time": {
+    "from": "now-24h",
+    "to": "now"
+  },
+  "refresh": "1m",
+  "tags": [
+    "translation",
+    "usage"
+  ],
+  "templating": {
+    "list": [
+      {
+        "type": "datasource",
+        "name": "app",
+        "label": "App DB",
+        "query": "postgres",
+        "regex": "/tr-(google_translate|deepl_translate|openai_translate|hd_translate|hd_google_translate|translator)/",
+        "current": {},
+        "hide": 0,
+        "refresh": 1,
+        "includeAll": false,
+        "multi": false
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "row",
+      "title": "Overview \u2014 all engines (lang_processing)",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "id": 1
+    },
+    {
+      "type": "stat",
+      "title": "Translations",
+      "datasource": {
+        "type": "postgres",
+        "uid": "pg-lang-processing"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 0,
+        "y": 1
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "postgres",
+            "uid": "pg-lang-processing"
+          },
+          "format": "table",
+          "editorMode": "code",
+          "rawSql": "SELECT count(*) AS v FROM \"QueueStats\" WHERE $__timeFilter(\"createdAt\")"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {}
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "id": 2
+    },
+    {
+      "type": "stat",
+      "title": "Characters translated",
+      "datasource": {
+        "type": "postgres",
+        "uid": "pg-lang-processing"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 6,
+        "y": 1
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "postgres",
+            "uid": "pg-lang-processing"
+          },
+          "format": "table",
+          "editorMode": "code",
+          "rawSql": "SELECT (SELECT coalesce(sum(characters),0) FROM \"GOOGLEUsage\" WHERE $__timeFilter(\"createdAt\"))+(SELECT coalesce(sum(characters),0) FROM \"DEEPLUsage\" WHERE $__timeFilter(\"createdAt\"))+(SELECT coalesce(sum(characters),0) FROM \"AZUREUsage\" WHERE $__timeFilter(\"createdAt\")) AS v"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {}
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "id": 3
+    },
+    {
+      "type": "stat",
+      "title": "Cache hit rate",
+      "datasource": {
+        "type": "postgres",
+        "uid": "pg-lang-processing"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 12,
+        "y": 1
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "postgres",
+            "uid": "pg-lang-processing"
+          },
+          "format": "table",
+          "editorMode": "code",
+          "rawSql": "SELECT round(100.0*avg((\"cached\")::int),1) AS v FROM \"QueueStats\" WHERE $__timeFilter(\"createdAt\")"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {},
+          "unit": "percent"
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "id": 4
+    },
+    {
+      "type": "stat",
+      "title": "Avg end-to-end translation",
+      "datasource": {
+        "type": "postgres",
+        "uid": "pg-lang-processing"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 18,
+        "y": 1
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "postgres",
+            "uid": "pg-lang-processing"
+          },
+          "format": "table",
+          "editorMode": "code",
+          "rawSql": "SELECT round(avg(\"time\")) AS v FROM \"QueueStats\" WHERE $__timeFilter(\"createdAt\")"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {},
+          "unit": "ms"
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "id": 5
+    },
+    {
+      "type": "timeseries",
+      "title": "Translations over time",
+      "datasource": {
+        "type": "postgres",
+        "uid": "pg-lang-processing"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 0,
+        "y": 5
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "postgres",
+            "uid": "pg-lang-processing"
+          },
+          "format": "time_series",
+          "editorMode": "code",
+          "rawSql": "SELECT $__timeGroupAlias(\"createdAt\", $__interval), count(*) AS translations FROM \"QueueStats\" WHERE $__timeFilter(\"createdAt\") GROUP BY 1 ORDER BY 1"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {}
+        },
+        "overrides": []
+      },
+      "options": {},
+      "id": 6
+    },
+    {
+      "type": "timeseries",
+      "title": "Characters by engine",
+      "datasource": {
+        "type": "postgres",
+        "uid": "pg-lang-processing"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 12,
+        "y": 5
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "postgres",
+            "uid": "pg-lang-processing"
+          },
+          "format": "time_series",
+          "editorMode": "code",
+          "rawSql": "SELECT $__timeGroupAlias(\"createdAt\", $__interval), sum(CASE WHEN e='google' THEN c END) AS google, sum(CASE WHEN e='deepl' THEN c END) AS deepl, sum(CASE WHEN e='azure' THEN c END) AS azure FROM (  SELECT \"createdAt\", characters c, 'google' e FROM \"GOOGLEUsage\" WHERE $__timeFilter(\"createdAt\")  UNION ALL SELECT \"createdAt\", characters, 'deepl' FROM \"DEEPLUsage\" WHERE $__timeFilter(\"createdAt\")  UNION ALL SELECT \"createdAt\", characters, 'azure' FROM \"AZUREUsage\" WHERE $__timeFilter(\"createdAt\")) s GROUP BY 1 ORDER BY 1"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {}
+        },
+        "overrides": []
+      },
+      "options": {},
+      "id": 7
+    },
+    {
+      "type": "timeseries",
+      "title": "End-to-end translation time (avg & p95)",
+      "datasource": {
+        "type": "postgres",
+        "uid": "pg-lang-processing"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 0,
+        "y": 12
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "postgres",
+            "uid": "pg-lang-processing"
+          },
+          "format": "time_series",
+          "editorMode": "code",
+          "rawSql": "SELECT $__timeGroupAlias(\"createdAt\", $__interval), round(avg(\"time\")) AS avg_ms, round(percentile_cont(0.95) WITHIN GROUP (ORDER BY \"time\")) AS p95_ms FROM \"QueueStats\" WHERE $__timeFilter(\"createdAt\") GROUP BY 1 ORDER BY 1"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {},
+          "unit": "ms"
+        },
+        "overrides": []
+      },
+      "options": {},
+      "id": 8
+    },
+    {
+      "type": "timeseries",
+      "title": "Latency stages (avg ms)",
+      "datasource": {
+        "type": "postgres",
+        "uid": "pg-lang-processing"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 12,
+        "y": 12
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "postgres",
+            "uid": "pg-lang-processing"
+          },
+          "format": "time_series",
+          "editorMode": "code",
+          "rawSql": "SELECT $__timeGroupAlias(\"createdAt\", $__interval), round(avg(\"queueWait\")) AS queue_wait, round(avg(\"detectionTime\")) AS detect, round(avg(\"translationTime\")) AS translate, round(avg(\"time\")) AS end_to_end FROM \"QueueStats\" WHERE $__timeFilter(\"createdAt\") GROUP BY 1 ORDER BY 1"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {},
+          "unit": "ms"
+        },
+        "overrides": []
+      },
+      "options": {},
+      "id": 9
+    },
+    {
+      "type": "timeseries",
+      "title": "OpenAI tokens",
+      "datasource": {
+        "type": "postgres",
+        "uid": "pg-lang-processing"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 0,
+        "y": 19
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "postgres",
+            "uid": "pg-lang-processing"
+          },
+          "format": "time_series",
+          "editorMode": "code",
+          "rawSql": "SELECT $__timeGroupAlias(\"createdAt\", $__interval), sum(\"inputTokens\") AS input_tokens, sum(\"outputTokens\") AS output_tokens FROM \"OpenAIUsage\" WHERE $__timeFilter(\"createdAt\") GROUP BY 1 ORDER BY 1"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {}
+        },
+        "overrides": []
+      },
+      "options": {},
+      "id": 10
+    },
+    {
+      "type": "timeseries",
+      "title": "Cache hit %",
+      "datasource": {
+        "type": "postgres",
+        "uid": "pg-lang-processing"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 12,
+        "y": 19
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "postgres",
+            "uid": "pg-lang-processing"
+          },
+          "format": "time_series",
+          "editorMode": "code",
+          "rawSql": "SELECT $__timeGroupAlias(\"createdAt\", $__interval), round(100.0*avg((\"cached\")::int),1) AS cache_hit_pct FROM \"QueueStats\" WHERE $__timeFilter(\"createdAt\") GROUP BY 1 ORDER BY 1"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {},
+          "unit": "percent"
+        },
+        "overrides": []
+      },
+      "options": {},
+      "id": 11
+    },
+    {
+      "type": "row",
+      "title": "Per-app detail \u2014 pick an engine app above ($app)",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 26
+      },
+      "id": 12
+    },
+    {
+      "type": "timeseries",
+      "title": "Translations",
+      "datasource": {
+        "type": "postgres",
+        "uid": "${app}"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 0,
+        "y": 27
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "postgres",
+            "uid": "${app}"
+          },
+          "format": "time_series",
+          "editorMode": "code",
+          "rawSql": "SELECT $__timeGroupAlias(\"createdAt\", $__interval), count(*) AS translations FROM \"UsageLog\" WHERE $__timeFilter(\"createdAt\") GROUP BY 1 ORDER BY 1"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {}
+        },
+        "overrides": []
+      },
+      "options": {},
+      "id": 13
+    },
+    {
+      "type": "timeseries",
+      "title": "Characters",
+      "datasource": {
+        "type": "postgres",
+        "uid": "${app}"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 8,
+        "y": 27
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "postgres",
+            "uid": "${app}"
+          },
+          "format": "time_series",
+          "editorMode": "code",
+          "rawSql": "SELECT $__timeGroupAlias(\"createdAt\", $__interval), sum(characters) AS characters FROM \"UsageLog\" WHERE $__timeFilter(\"createdAt\") GROUP BY 1 ORDER BY 1"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {}
+        },
+        "overrides": []
+      },
+      "options": {},
+      "id": 14
+    },
+    {
+      "type": "timeseries",
+      "title": "End-to-end translation time (avg & p95 ms)",
+      "datasource": {
+        "type": "postgres",
+        "uid": "${app}"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 16,
+        "y": 27
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "postgres",
+            "uid": "${app}"
+          },
+          "format": "time_series",
+          "editorMode": "code",
+          "rawSql": "SELECT $__timeGroupAlias(\"createdAt\", $__interval), round(avg(\"time\")) AS avg_end_to_end, round(percentile_cont(0.95) WITHIN GROUP (ORDER BY \"time\")) AS p95_end_to_end, round(avg(\"queueTime\")) AS queue FROM \"UsageLog\" WHERE $__timeFilter(\"createdAt\") GROUP BY 1 ORDER BY 1"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {},
+          "unit": "ms"
+        },
+        "overrides": []
+      },
+      "options": {},
+      "id": 15
+    },
+    {
+      "type": "table",
+      "title": "Top language pairs",
+      "datasource": {
+        "type": "postgres",
+        "uid": "${app}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 34
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "postgres",
+            "uid": "${app}"
+          },
+          "format": "table",
+          "editorMode": "code",
+          "rawSql": "SELECT \"sourceLanguage\"||' -> '||\"targetLanguage\" AS pair, count(*) AS translations, sum(characters) AS characters, round(avg(\"time\")) AS avg_ms, round(100.0*avg((\"cached\")::int),1) AS cache_pct FROM \"UsageLog\" WHERE $__timeFilter(\"createdAt\") GROUP BY 1 ORDER BY 2 DESC LIMIT 20"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {}
+        },
+        "overrides": []
+      },
+      "options": {},
+      "id": 16
+    },
+    {
+      "type": "table",
+      "title": "By engine",
+      "datasource": {
+        "type": "postgres",
+        "uid": "${app}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 34
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "postgres",
+            "uid": "${app}"
+          },
+          "format": "table",
+          "editorMode": "code",
+          "rawSql": "SELECT engine, count(*) AS translations, sum(characters) AS characters, round(avg(\"time\")) AS avg_ms, round(100.0*avg((\"cached\")::int),1) AS cache_pct FROM \"UsageLog\" WHERE $__timeFilter(\"createdAt\") GROUP BY 1 ORDER BY 2 DESC"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {}
+        },
+        "overrides": []
+      },
+      "options": {},
+      "id": 17
+    },
+    {
+      "type": "row",
+      "title": "Health \u2014 translation namespace (Prometheus)",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 42
+      },
+      "id": 18
+    },
+    {
+      "type": "timeseries",
+      "title": "Container restarts (rolling 1h)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 0,
+        "y": 43
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (pod) (increase(kube_pod_container_status_restarts_total{namespace=\"translation\"}[1h]))",
+          "legendFormat": "{{pod}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {}
+        },
+        "overrides": []
+      },
+      "options": {},
+      "id": 19
+    },
+    {
+      "type": "timeseries",
+      "title": "Memory working set",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 12,
+        "y": 43
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (pod) (container_memory_working_set_bytes{namespace=\"translation\",container!=\"\",container!=\"POD\"})",
+          "legendFormat": "{{pod}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {},
+          "unit": "bytes"
+        },
+        "overrides": []
+      },
+      "options": {},
+      "id": 20
+    }
+  ]
+}

@@ -1,0 +1,3 @@
+# Copy to terraform.tfvars (gitignored) and adjust.
+domain   = "example.com"
+location = "ash"        # Hetzner location: nbg1, fsn1, hel1, ash, hil, sin

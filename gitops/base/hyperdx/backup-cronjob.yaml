@@ -1,0 +1,91 @@
+# Daily off-cluster backup of the HyperDX state to the Hetzner S3 bucket (same bucket the Postgres
+# `databasus` backups use, under a hyperdx/ prefix). The live data is already HA on NFS/DRBD, so this
+# guards against logical loss (corruption, accidental drop, split-brain) — not hardware failure.
+#
+# Sequence (initContainers run in order, then main):
+#   1. mongodump   -> /work/mongodb-<ts>.archive.gz   (HyperDX config: dashboards, alerts, users)
+#   2. clickhouse  -> DISABLED by default (ENABLE_CLICKHOUSE_BACKUP=false). The otel logs are
+#                     disposable (HA on NFS/DRBD + 30d TTL), so they're not worth a nightly full dump.
+#                     Kept as a ready switch — see the container env to re-enable (use incremental then).
+#   3. mc          -> upload the mongo archive, then prune everything under hyperdx/ older than 7d
+#
+# Net effect today: a tiny nightly MongoDB backup only. Retention = keep ~7 dailies (mc rm
+# --older-than 7d). S3 creds from the hyperdx-backup-s3 SealedSecret; DB creds from hyperdx-secrets.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: hyperdx-backup
+  namespace: observability
+spec:
+  schedule: "30 3 * * *"          # 03:30 daily (after the Postgres databasus window)
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: 3600
+      template:
+        spec:
+          restartPolicy: Never
+          securityContext: { fsGroup: 65534 }   # makes the shared /work emptyDir writable by any UID
+          affinity:
+            nodeAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                nodeSelectorTerms:
+                  - matchExpressions:
+                      - { key: node-pool, operator: NotIn, values: ["burst"] }
+          volumes:
+            - { name: work, emptyDir: {} }
+          initContainers:
+            - name: mongodump
+              image: mongo:5.0.33-focal
+              env:
+                - { name: MONGO_PW, valueFrom: { secretKeyRef: { name: hyperdx-secrets, key: MONGODB_PASSWORD } } }
+              volumeMounts: [{ name: work, mountPath: /work }]
+              command: ["/bin/sh", "-c"]
+              args:
+                - >
+                  mongodump --host mongodb --port 27017 --username hyperdx --password "$MONGO_PW"
+                  --authenticationDatabase admin --gzip
+                  --archive=/work/mongodb-$(date +%F-%H%M%S).archive.gz
+            - name: clickhouse-backup
+              image: clickhouse/clickhouse-server:25.7-alpine
+              env:
+                # OFF by default: the otel logs/traces are disposable (HA on NFS/DRBD + 30d TTL), so a
+                # nightly ~28 GiB+ full backup isn't worth the storage/egress. Flip to "true" to re-enable
+                # — and if you do, switch the query below to an incremental (SETTINGS base_backup=S3(...))
+                # so daily runs only ship the delta. MongoDB (the valuable config) is backed up regardless.
+                - { name: ENABLE_CLICKHOUSE_BACKUP, value: "false" }
+                - { name: CH_PW, valueFrom: { secretKeyRef: { name: hyperdx-secrets, key: CLICKHOUSE_APP_PASSWORD } } }
+                - { name: S3_ENDPOINT, value: "https://hel1.your-objectstorage.com" }
+                - { name: S3_BUCKET,   value: "db-backups" }
+                - { name: S3_ACCESS_KEY, valueFrom: { secretKeyRef: { name: hyperdx-backup-s3, key: S3_ACCESS_KEY } } }
+                - { name: S3_SECRET_KEY, valueFrom: { secretKeyRef: { name: hyperdx-backup-s3, key: S3_SECRET_KEY } } }
+              command: ["/bin/sh", "-c"]
+              args:
+                - |
+                  if [ "$ENABLE_CLICKHOUSE_BACKUP" != "true" ]; then
+                    echo "ClickHouse backup disabled (ENABLE_CLICKHOUSE_BACKUP != true) — logs are disposable; skipping."
+                    exit 0
+                  fi
+                  clickhouse-client --host clickhouse --port 9000 --user app --password "$CH_PW" --query \
+                    "BACKUP DATABASE default TO S3('$S3_ENDPOINT/$S3_BUCKET/hyperdx/clickhouse/$(date +%F-%H%M%S)/', '$S3_ACCESS_KEY', '$S3_SECRET_KEY')"
+          containers:
+            - name: upload-and-prune
+              image: minio/mc:RELEASE.2025-04-08T15-39-49Z
+              env:
+                - { name: S3_ENDPOINT, value: "https://hel1.your-objectstorage.com" }
+                - { name: S3_BUCKET,   value: "db-backups" }
+                - { name: S3_ACCESS_KEY, valueFrom: { secretKeyRef: { name: hyperdx-backup-s3, key: S3_ACCESS_KEY } } }
+                - { name: S3_SECRET_KEY, valueFrom: { secretKeyRef: { name: hyperdx-backup-s3, key: S3_SECRET_KEY } } }
+              volumeMounts: [{ name: work, mountPath: /work }]
+              command: ["/bin/sh", "-c"]
+              args:
+                - |
+                  set -e
+                  mc alias set hz "$S3_ENDPOINT" "$S3_ACCESS_KEY" "$S3_SECRET_KEY"
+                  mc cp /work/mongodb-*.archive.gz "hz/$S3_BUCKET/hyperdx/mongodb/"
+                  # keep ~7 daily backups: drop anything older than 7 days (mongo archives + CH backup dirs)
+                  mc rm --recursive --force --older-than 7d "hz/$S3_BUCKET/hyperdx/" || true
+                  echo "backup + prune done"
