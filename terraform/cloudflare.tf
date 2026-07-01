@@ -14,8 +14,8 @@ data "cloudflare_zone" "zone" {
 }
 
 locals {
-  bo_ip = "203.0.113.10" # backoffice box (Docker Swarm mgmt stack) — set to your box's public IP
-  lb_ip = "203.0.113.20" # cluster LB floating IP (app ingress / traefik) — set to your floating IP
+  bo_ip = hcloud_primary_ip.nat_ip.ip_address    # backoffice box public IP (Docker Swarm mgmt stack)
+  lb_ip = hcloud_floating_ip.lb_main.ip_address  # cluster LB floating IP (app ingress / traefik)
 
   # host (under var.domain) => target IP. Platform records only; add your app hosts here.
   dns_records = {
