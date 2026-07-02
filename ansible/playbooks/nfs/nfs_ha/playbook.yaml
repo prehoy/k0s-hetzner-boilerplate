@@ -208,19 +208,6 @@
           - hcloud_token | length > 0
         fail_msg: "Pass -e hcloud_token=... (the Hetzner Cloud API token)."
 
-    - name: Detect whether DRBD is already brought up (gates auto-starting keepalived)
-      command: drbdadm dstate {{ drbd_resource }}
-      register: drbd_dstate
-      changed_when: false
-      failed_when: false
-
-    - name: Decide if keepalived may run
-      set_fact:
-        # Only let keepalived start/restart once DRBD is live — otherwise its failover script could
-        # unmount the legacy live export on nfs-0. First run = false; bring DRBD up per the runbook,
-        # then start keepalived (or re-run this playbook) to arm failover.
-        drbd_ready: "{{ 'UpToDate' in (drbd_dstate.stdout | default('')) }}"
-
     - name: Install packages (NFS server, keepalived, API tooling)
       apt:
         name:
@@ -297,29 +284,19 @@
         mode: "0644"
       notify: restart keepalived
 
-    - name: Enable keepalived at boot
+    # Run keepalived on BOTH nodes unconditionally — safety is enforced by the chk_drbd track_script
+    # (a node advertises MASTER priority only while its local DRBD disk is UpToDate), so a node that
+    # is still doing its initial sync stays BACKUP/FAULT and can't grab the VIP or mount. This makes
+    # failover self-arming: the moment nfs-1 finishes syncing it becomes a valid standby, no re-run.
+    # (For a live-export MIGRATION onto an existing volume you'd instead gate this on DRBD readiness.)
+    - name: Enable + start keepalived
       systemd:
         name: keepalived
         enabled: true
-
-    - name: Start keepalived once local DRBD is UpToDate
-      systemd:
-        name: keepalived
         state: started
-      when: drbd_ready | bool
-
-    - name: Note when keepalived is left stopped (DRBD not UpToDate on this node yet)
-      debug:
-        msg: >-
-          DRBD not yet UpToDate on {{ inventory_hostname }} (still syncing) — keepalived left stopped;
-          it arms automatically on the next run/boot once this node finishes its initial sync.
-      when: not (drbd_ready | bool)
 
   handlers:
-    # Only (re)start keepalived once DRBD is live, so its failover script can't disturb the legacy
-    # live export during initial provisioning.
     - name: restart keepalived
       systemd:
         name: keepalived
         state: restarted
-      when: drbd_ready | bool
