@@ -10,6 +10,10 @@ running inside. No single node can take the cluster down.
 Everything is parameterized and ships with `.example` placeholders — **no real secrets in this repo**.
 Fill them in, set your `domain`, and `terraform apply`.
 
+> **⚡ Don't want to run it yourself?** We operate this stack for you — provisioning, upgrades, backups,
+> and **24/7 monitoring** — from **$399/mo** on top of Hetzner's (already low) server cost. See
+> **[Managed service](#managed-service)**.
+
 ---
 
 ## Architecture
@@ -144,12 +148,14 @@ internally redundant). This is the floor.
 | 3× **CX23** · 2/4 s (Intel) | EU | €16.47 | €7.49 | **≈ $26** |
 | 3× **CAX11** · 2/4 s (Arm) | EU | €17.97 | €7.49 | **≈ $27** |
 | 3× **CX33** · 4/8 s (Intel) | EU | €25.47 | €7.49 | **≈ $36** |
-| 3× **CPX11** · 2/4 s (AMD) | US | $61.47 | $8.59 | **≈ $70** |
+| 3× **CPX11** · 2/4 s (AMD) | US-West (hil) | $61.47 | $8.59 | **≈ $70** |
+| 3× **CPX21** · 4/8 s (AMD) | US-East (ash) | $112.47 | $8.59 | **≈ $121** |
 
 What you trade vs the full boilerplate: Postgres runs **in-cluster** on the three nodes (no separate
 Patroni tier) and storage is single-attach block volumes (no DRBD NFS RWX pair) — add those tiers as you
-grow. Sub-$40 HA is **EU-only**: the US has no Intel/Arm shared line, so its floor is ~$70 (shared) /
-~$153 (3× CCX13 dedicated).
+grow. Sub-$40 HA is **EU-only** (no Intel/Arm line in the US). The small `CPX11` is currently stocked only in
+**US-West (Hillsboro)**, so a ~$70 US HA cluster is West-only; **US-East (Ashburn)** starts at the 4/8
+shape (~$121) or 3× CCX13 dedicated (~$153).
 
 ### Small · non-HA (dev/staging) — 3 nodes @ **4 vCPU / 8 GB** · 1 LB · 100 GB
 
@@ -185,18 +191,19 @@ grow. Sub-$40 HA is **EU-only**: the US has no Intel/Arm shared line, so its flo
 
 Hetzner's US locations (Ashburn / Hillsboro) are pricier — and the gap is *structural*, not just FX:
 
-| | EU (fsn / nbg / hel) | US (ash / hil) |
-|---|--:|--:|
-| Cheapest lines | **CX** €5.49 · **CAX** (Arm) €5.99 | ❌ not sold — **CPX / CCX only** |
-| Dedicated CCX23 (4/16) | €85.99 (~$93) | **$102.99** (+11%) |
-| Cheapest 3-node HA | **~$26** (3× CX23 + LB) | **~$70** (3× CPX11 + LB) |
-| Medium-HA config total | **~$478** | **~$516** (+8%) |
-| **Included traffic / server** | **20 TB** | **1 TB** (20× less) |
+| | EU (fsn / nbg / hel) | US-West (hil) | US-East (ash) |
+|---|--:|--:|--:|
+| Cheapest shared shape | **CX23** €5.49 · **CAX11** €5.99 | **CPX11** $20.49 | CPX21 $37.49 (no CPX11) |
+| Dedicated CCX23 (4/16) | €85.99 (~$93) | $102.99 (+11%) | $102.99 (+11%) |
+| Cheapest 3-node HA | **~$26** | **~$70** | ~$121 |
+| Medium-HA config total | **~$478** | **~$516** | **~$516** |
+| **Included traffic / server** | **20 TB** | **1 TB** | **1 TB** |
 
-The CPX/CCX shapes are identical specs in both regions (the US just kept the old `CPX11–51` names). The
-real US penalties are **(1)** no cheap Intel/Arm lines — your budget floor triples — and **(2)** 1 TB vs
-20 TB of included traffic per server, which is what actually bites a busy cluster. Stay in the EU unless
-you specifically need US latency.
+Both US sites price CPX/CCX identically and include only **1 TB** traffic/server (vs 20 TB in the EU).
+Two things vary: the small **`CPX11`** is currently stocked in **Hillsboro (West)** but not **Ashburn
+(East)**, so the sub-$100 US HA floor is West-only; and the cheap **Intel/Arm (CX/CAX)** lines stay
+**EU-exclusive**. Stay in the EU unless you need US latency — and if you do, pick the West for the
+cheapest footprint.
 
 ### …then egress makes it a rout
 
@@ -219,6 +226,27 @@ rates as of 2026 (Hetzner = official post-June-2026 adjustment doc); the hypersc
 1–3yr commitments/savings plans, which Hetzner doesn't require because its list price is already lower.
 (3) GKE's `e2` rows are shared-vCPU; matching Hetzner's dedicated `CCX` with GKE `n2`/`c2` widens the
 gap further. Track your real bill with **[hetzner-cost-monitor](https://github.com/prehoy/hetzner-cost-monitor)**.
+
+## Managed service
+
+Prefer to skip the ops entirely? We run this cluster for you — the same fully-HA stack, operated as a
+service: provisioning, k0s/ArgoCD upgrades, backups, security patching, and **24/7 monitoring** off the
+Prometheus / Grafana / Alertmanager / gatus observability that's already baked in. You pay the Hetzner
+server + traffic bill (at cost, shown above) **plus** a flat management fee:
+
+| Tier | Price/mo | Response | Best for | Included |
+|---|--:|---|---|---|
+| **Standard** | **$399** | automated 24/7 alerting · business-hours human response | staging, internal tools, small prod | patching, backups, GitOps deploys, ≤5 nodes |
+| **Pro** | **$999** | true 24/7 on-call · 15-min P1 ack · 99.9% target | business-critical prod HA | incident response, monthly review, ≤12 nodes, +$50/node beyond |
+| **Enterprise** | **from $2,500** | 99.95% · 5-min ack · named contact · DR drills | regulated / multi-cluster | compliance support, on-call rotation, custom SLA |
+
+- **Infrastructure is passed through at Hetzner cost** — no markup on servers or traffic. The fee buys
+  operations, not resold compute.
+- **One-time onboarding: $1,500–3,000** — cluster provisioning, migration, and handover.
+- Even fully managed, a prod HA cluster runs **~$1,477/mo all-in** (Pro tier + Medium-HA infra) — less
+  than the *unmanaged* EKS infra alone, and a fraction of a DevOps hire.
+
+**Interested?** Email [office@darka.io](mailto:office@darka.io) or open an issue.
 
 ## Related projects
 
