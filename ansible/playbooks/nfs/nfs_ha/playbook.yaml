@@ -6,9 +6,12 @@
 # moved via the Cloud API on master transition (a plain VRRP virtual_ipaddress is NOT delivered on
 # Hetzner's SDN). NFS data lives on /dev/drbd0, mounted only on the keepalived MASTER.
 #
-# NON-DESTRUCTIVE: installs packages + writes config/scripts only. The one-time DRBD bring-up
-# (create-md, first sync, mkfs.ext4, data migration) and client cut-over are guided steps in
-# docs/RUNBOOK-nfs-ha.md, so we never reformat a live volume by accident.
+# FULLY AUTOMATED + IDEMPOTENT: brings the DRBD pair up from scratch (create-md -> up -> one-time
+# primary+mkfs on nfs-0 -> keepalived) with guards so a re-run NEVER reformats a live volume:
+#   - create-md only when the resource is DOWN and has NO metadata,
+#   - force-primary + mkfs only when /dev/drbd0 has NO filesystem (i.e. first ever init),
+#   - keepalived starts only once DRBD is UpToDate.
+# keepalived's failover script owns the runtime promote/mount/export/VIP thereafter.
 #
 #   ansible-playbook -i inventory playbooks/nfs/nfs_ha/playbook.yaml -e hcloud_token=$HCLOUD_TOKEN
 
@@ -107,6 +110,77 @@
         name: drbd-up.service
         enabled: true
         daemon_reload: "{{ drbd_up_unit.changed }}"
+
+    # --- One-time DRBD init + bring-up (idempotent + split-brain-safe) ----------------------------
+    - name: Check DRBD connection state (is r0 already up?)
+      command: "drbdadm cstate {{ drbd_resource }}"
+      register: drbd_cstate
+      changed_when: false
+      failed_when: false
+
+    - name: Probe for existing DRBD metadata (disk-ful members, only while down)
+      command: "drbdadm dump-md {{ drbd_resource }}"
+      register: drbd_dumpmd
+      changed_when: false
+      failed_when: false
+      when:
+        - not (drbd_diskless | default(false) | bool)
+        - drbd_cstate.rc != 0
+
+    - name: Initialize DRBD metadata (ONE-TIME; disk-ful; only when the device has none)
+      command: "drbdadm -- --force create-md {{ drbd_resource }}"
+      when:
+        - not (drbd_diskless | default(false) | bool)
+        - drbd_cstate.rc != 0
+        - drbd_dumpmd.rc != 0
+
+    - name: Bring the DRBD resource up (all members, incl. diskless tiebreaker)
+      command: "drbdadm up {{ drbd_resource }}"
+      register: drbd_up_now
+      changed_when: drbd_up_now.rc == 0
+      failed_when:
+        - drbd_up_now.rc != 0
+        - "'already configured' not in (drbd_up_now.stderr | default(''))"
+      when: drbd_cstate.rc != 0
+
+# ---------------------------------------------------------------------------
+# Play 1.5: one-time filesystem init on the primary (nfs-0, role=master). Guarded by "no filesystem
+# yet" so a re-run never reformats. keepalived's failover script does the runtime promote/mount.
+# ---------------------------------------------------------------------------
+- name: DRBD initial filesystem (one-time, primary only)
+  hosts: nfs
+  become: true
+  gather_facts: false
+  vars:
+    drbd_resource: r0
+    drbd_device: /dev/drbd0
+  tasks:
+    - name: Initialize the replicated filesystem on the primary
+      when: role | default('') == 'master'
+      block:
+        - name: Wait for DRBD to connect to its peer
+          command: "drbdadm cstate {{ drbd_resource }}"
+          register: cs
+          until: cs.stdout is search('Connected|SyncSource|SyncTarget')
+          retries: 30
+          delay: 5
+          changed_when: false
+
+        - name: Check for an existing filesystem on the DRBD device
+          command: "blkid -o value -s TYPE {{ drbd_device }}"
+          register: drbd_fs
+          changed_when: false
+          failed_when: false
+
+        - name: Promote + mkfs + demote (ONE-TIME initial format; guarded by empty device)
+          when: (drbd_fs.stdout | trim) == ''
+          block:
+            - name: Force primary for the initial sync (this node = source of truth)
+              command: "drbdadm primary --force {{ drbd_resource }}"
+            - name: Create the ext4 filesystem on /dev/drbd0
+              command: "mkfs.ext4 -q -L nfsdata {{ drbd_device }}"
+            - name: Demote to secondary (keepalived promotes the elected master)
+              command: "drbdadm secondary {{ drbd_resource }}"
 
 # ---------------------------------------------------------------------------
 # Play 2: NFS + keepalived on the active pair only (NOT the tiebreaker).
@@ -228,11 +302,17 @@
         name: keepalived
         enabled: true
 
-    - name: Note when keepalived is NOT auto-started (DRBD not up yet)
+    - name: Start keepalived once local DRBD is UpToDate
+      systemd:
+        name: keepalived
+        state: started
+      when: drbd_ready | bool
+
+    - name: Note when keepalived is left stopped (DRBD not UpToDate on this node yet)
       debug:
         msg: >-
-          DRBD not yet UpToDate on {{ inventory_hostname }} — leaving keepalived stopped. Bring DRBD
-          up (docs/RUNBOOK-nfs-ha.md), then `systemctl start keepalived` (backup first, then master).
+          DRBD not yet UpToDate on {{ inventory_hostname }} (still syncing) — keepalived left stopped;
+          it arms automatically on the next run/boot once this node finishes its initial sync.
       when: not (drbd_ready | bool)
 
   handlers:
