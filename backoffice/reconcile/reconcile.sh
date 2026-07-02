@@ -4,19 +4,19 @@
 # `docker stack deploy`s every stack under backoffice/stacks/.
 #
 # On-box prereqs (bootstrap once):
-#   /etc/simusa/age.key            - SOPS age private key
-#   /etc/simusa/ssh/id_rsa         - git deploy key (read)
-#   /etc/simusa/ssh/known_hosts    - github host key
-#   installed at /usr/local/bin/simusa-reconcile.sh + simusa-reconcile.{service,timer}
+#   /etc/infra/age.key            - SOPS age private key
+#   /etc/infra/ssh/id_rsa         - git deploy key (read)
+#   /etc/infra/ssh/known_hosts    - github host key
+#   installed at /usr/local/bin/infra-reconcile.sh + infra-reconcile.{service,timer}
 set -euo pipefail
 
 REPO_URL="git@github.com:YOUR_ORG/infra.git"
-REPO_DIR="/opt/simusa-infra"
+REPO_DIR="/opt/infra"
 BRANCH="master"
 STACKS_SUBDIR="backoffice/stacks"
 
-export SOPS_AGE_KEY_FILE="/etc/simusa/age.key"
-export GIT_SSH_COMMAND="ssh -i /etc/simusa/ssh/id_rsa -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/etc/simusa/ssh/known_hosts"
+export SOPS_AGE_KEY_FILE="/etc/infra/age.key"
+export GIT_SSH_COMMAND="ssh -i /etc/infra/ssh/id_rsa -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/etc/infra/ssh/known_hosts"
 
 log() { echo "$(date -u +%FT%TZ) reconcile: $*"; }
 
@@ -31,10 +31,10 @@ log "repo at $(git -C "$REPO_DIR" rev-parse --short HEAD)"
 
 # 1b. self-update: keep the installed script + units in sync with the repo (GitOps for itself)
 SELF="$REPO_DIR/backoffice/reconcile"
-install -m755 "$SELF/reconcile.sh" /usr/local/bin/simusa-reconcile.sh
-if ! cmp -s "$SELF/simusa-reconcile.service" /etc/systemd/system/simusa-reconcile.service \
-   || ! cmp -s "$SELF/simusa-reconcile.timer" /etc/systemd/system/simusa-reconcile.timer; then
-  cp "$SELF/simusa-reconcile.service" "$SELF/simusa-reconcile.timer" /etc/systemd/system/
+install -m755 "$SELF/reconcile.sh" /usr/local/bin/infra-reconcile.sh
+if ! cmp -s "$SELF/infra-reconcile.service" /etc/systemd/system/infra-reconcile.service \
+   || ! cmp -s "$SELF/infra-reconcile.timer" /etc/systemd/system/infra-reconcile.timer; then
+  cp "$SELF/infra-reconcile.service" "$SELF/infra-reconcile.timer" /etc/systemd/system/
   systemctl daemon-reload || true
 fi
 

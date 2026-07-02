@@ -16,7 +16,7 @@ services:
       - wg-portal-data:/app/data
       # absolute path: Swarm bind mounts are resolved by dockerd. config.yaml is SOPS-decrypted
       # from config.yaml.sops by the reconciler before deploy (holds admin/session/csrf secrets).
-      - /opt/simusa-infra/backoffice/stacks/wg-portal/config.yaml:/app/config/config.yaml:ro
+      - /opt/infra/backoffice/stacks/wg-portal/config.yaml:/app/config/config.yaml:ro
     networks:
       - hostnet
     deploy:

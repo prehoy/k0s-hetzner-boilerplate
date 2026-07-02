@@ -6,6 +6,6 @@ Requires=docker.service
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/bin/simusa-reconcile.sh
+ExecStart=/usr/local/bin/infra-reconcile.sh
 # don't let a transient git/registry hiccup mark it failed forever
 TimeoutStartSec=300

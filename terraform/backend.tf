@@ -5,7 +5,7 @@
 # terraform {
 #   backend "s3" {
 #     bucket                      = "my-tfstate"
-#     key                         = "simusa-infra/terraform.tfstate"
+#     key                         = "infra/terraform.tfstate"
 #     region                      = "hel1"
 #     endpoints                   = { s3 = "https://hel1.your-objectstorage.com" }
 #     skip_credentials_validation = true

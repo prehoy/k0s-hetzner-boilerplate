@@ -14,9 +14,9 @@ A tiny systemd timer (`reconcile/`) runs an ArgoCD-style loop on the box: `git p
 SOPS-decrypt each stack's secrets → `docker stack deploy` every stack under `stacks/`.
 - Secrets are **SOPS-encrypted** in git (age recipient
   `age1YOUR_PUBLIC_AGE_RECIPIENT`); the private age key
-  lives only at `/etc/simusa/age.key`.
-- On-box state: `/etc/simusa/{age.key,ssh/}`, `/opt/simusa-infra` (clone),
-  `/usr/local/bin/simusa-reconcile.sh`, `simusa-reconcile.{service,timer}`.
+  lives only at `/etc/infra/age.key`.
+- On-box state: `/etc/infra/{age.key,ssh/}`, `/opt/infra` (clone),
+  `/usr/local/bin/infra-reconcile.sh`, `infra-reconcile.{service,timer}`.
 - Add a stack = drop `stacks/<name>/stack.yml` (+ SOPS `secrets/`) and push. No controller.
 
 ## Stacks
@@ -32,12 +32,12 @@ DNS: point `*.bo.example.com` A-records at the backoffice box public IP (Cloudfl
 
 ## Bootstrap (one-time, on the box)
 ```bash
-# swarm already init'd; secrets at /etc/simusa/{age.key,ssh/id_rsa,ssh/known_hosts}
+# swarm already init'd; secrets at /etc/infra/{age.key,ssh/id_rsa,ssh/known_hosts}
 # authenticate Docker Hub so image pulls aren't throttled by the anonymous rate limit:
 echo "$DOCKERHUB_PAT" | docker login -u YOUR_DOCKERHUB_USER --password-stdin
-git clone <repo> /opt/simusa-infra        # via the deploy key
-install -m755 /opt/simusa-infra/backoffice/reconcile/reconcile.sh /usr/local/bin/simusa-reconcile.sh
-cp /opt/simusa-infra/backoffice/reconcile/simusa-reconcile.{service,timer} /etc/systemd/system/
-systemctl daemon-reload && systemctl enable --now simusa-reconcile.timer
-systemctl start simusa-reconcile.service   # first run
+git clone <repo> /opt/infra        # via the deploy key
+install -m755 /opt/infra/backoffice/reconcile/reconcile.sh /usr/local/bin/infra-reconcile.sh
+cp /opt/infra/backoffice/reconcile/infra-reconcile.{service,timer} /etc/systemd/system/
+systemctl daemon-reload && systemctl enable --now infra-reconcile.timer
+systemctl start infra-reconcile.service   # first run
 ```

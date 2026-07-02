@@ -1,4 +1,4 @@
-# HAProxy in front of the Patroni cluster (simusa_cluster, 10.0.0.100-102 (PROD)).
+# HAProxy in front of the Patroni cluster (infra_cluster, 10.0.0.100-102 (PROD)).
 # Dynamic leader/replica routing via Patroni's REST health endpoints on :8008:
 #   GET /primary -> 200 only on the current leader   (write port 5432)
 #   GET /replica -> 200 on replicas                  (read  port 5433)

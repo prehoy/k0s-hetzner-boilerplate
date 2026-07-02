@@ -19,7 +19,7 @@ services:
       # this forces a task restart on config edits (same trick as gatus). Set by the reconciler.
       - RECONCILE_HASH=${STACK_HASH:-0}
     volumes:
-      - /opt/simusa-infra/backoffice/stacks/db_lb/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+      - /opt/infra/backoffice/stacks/db_lb/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
     networks:
       traefik-public:
         aliases:

@@ -18,7 +18,7 @@ services:
       - RECONCILE_HASH=${STACK_HASH:-0}
     volumes:
       # absolute path: Swarm bind mounts are resolved by dockerd
-      - /opt/simusa-infra/backoffice/stacks/gatus/config.yaml:/config/config.yaml:ro
+      - /opt/infra/backoffice/stacks/gatus/config.yaml:/config/config.yaml:ro
       - gatus-data:/data
     networks:
       - traefik-public

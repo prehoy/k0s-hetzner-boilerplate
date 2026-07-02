@@ -7,7 +7,7 @@ resources:
   - woodpecker-sealedsecret.yaml
   - woodpecker-slack-sealedsecret.yaml  # native secret mounted by pipelines (build notifications)
   # Build infra the pipelines need (buildkitd at buildkitd.ci-build:1234 + native secrets the
-  # build mounts: dockerhub push creds, SSH key to commit the image bump back to simusa-infra).
+  # build mounts: dockerhub push creds, SSH key to commit the image bump back to infra).
   - buildkitd.yaml
   - dockerhub-cred-sealedsecret.yaml
   - ci-infra-write-key-sealedsecret.yaml

@@ -16,7 +16,7 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - traefik-certs:/certificates
       # absolute path: Swarm bind mounts are resolved by dockerd, not the CLI (no relative paths)
-      - /opt/simusa-infra/backoffice/stacks/traefik/dynamic:/dynamic:ro
+      - /opt/infra/backoffice/stacks/traefik/dynamic:/dynamic:ro
     command:
       - --providers.swarm.endpoint=unix:///var/run/docker.sock
       - --providers.swarm.network=traefik-public

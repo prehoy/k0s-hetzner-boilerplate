@@ -8,7 +8,7 @@ your filled-in `inventory` (copy `inventory.example`).
 
 - `terraform`, `ansible`, `kubectl`, `helm`, `kubeseal`, `wg` installed locally.
 - Hetzner Cloud API token + Cloudflare API token (see `terraform/secrets.auto.tfvars.example`).
-- Your SSH public key in `terraform/ssh_keys/admin.pub`, private key at `~/.ssh/simusa-hetzner`
+- Your SSH public key in `terraform/ssh_keys/admin.pub`, private key at `~/.ssh/infra-hetzner`
   (matches `ansible/ansible.cfg`).
 
 ## 1. Terraform — provision Hetzner + DNS
