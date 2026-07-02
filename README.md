@@ -124,60 +124,98 @@ a control-plane fee and its egress is effectively free. This repo is what automa
 part away.
 
 Same cluster, four providers, **matched vCPU and RAM per node** (exact instance shown in each row).
-On-demand, NET (ex-VAT), **730 hrs/mo**, EU regions. Managed control planes (GKE-regional, EKS, DOKS-HA)
-bundle HA into their fee; on Hetzner you run three small controllers — priced in below.
+On-demand, NET (ex-VAT), **730 hrs/mo**, EU regions. Hetzner prices are the official **post-June-2026**
+rates (that hike renamed the shared lines: old `CPX11→CPX22`, `CX22→CX23`); €→$ at ~1.08. Hetzner rows
+use the **CPX** (shared AMD) line as the fair analog to the others' shared tiers — its **CX** (Intel) and
+**CAX** (Arm) lines are cheaper still (see the sub-$100 build below).
 
 > **vCPU class matters, so it's shown.** `d` = dedicated cores, `s` = shared/burstable. Note Hetzner's
 > `CCX` rows are **dedicated** while GKE's `e2` is **shared** — i.e. Hetzner is cheaper *and* gives the
 > stronger vCPU class in configs B & C.
 
+### Cheapest HA possible — 3-node, tiny shared vCPU (**under $100/mo**)
+
+A genuinely HA k0s cluster on the smallest footprint: 3 nodes that each run the control plane **and**
+workloads (etcd quorum → survives any one node), behind a single Hetzner managed Load Balancer (itself
+internally redundant). This is the floor.
+
+| Build | Region | 3× node | +LB | **Total/mo** |
+|---|---|--:|--:|--:|
+| 3× **CX23** · 2/4 s (Intel) | EU | €16.47 | €7.49 | **≈ $26** |
+| 3× **CAX11** · 2/4 s (Arm) | EU | €17.97 | €7.49 | **≈ $27** |
+| 3× **CX33** · 4/8 s (Intel) | EU | €25.47 | €7.49 | **≈ $36** |
+| 3× **CPX11** · 2/4 s (AMD) | US | $61.47 | $8.59 | **≈ $70** |
+
+What you trade vs the full boilerplate: Postgres runs **in-cluster** on the three nodes (no separate
+Patroni tier) and storage is single-attach block volumes (no DRBD NFS RWX pair) — add those tiers as you
+grow. Sub-$40 HA is **EU-only**: the US has no Intel/Arm shared line, so its floor is ~$70 (shared) /
+~$153 (3× CCX13 dedicated).
+
 ### Small · non-HA (dev/staging) — 3 nodes @ **4 vCPU / 8 GB** · 1 LB · 100 GB
 
 | Provider | Node × 3 | Ctrl plane | LB | Storage | **Total/mo** |
 |---|---|---|--:|--:|--:|
-| **Hetzner** | CPX31 · 4/8 s | folded into node ($0) | LB11 $8 | $6 | **≈ $217** |
+| **Hetzner** | CPX32 · 4/8 s | folded into node ($0) | LB11 $8 | $5 | **≈ $129** |
 | GKE | e2-custom-4-8192 · 4/8 s | free zonal ($0) | $18 | $10 | **≈ $292** |
 | EKS | c6i.xlarge · 4/8 **d** | $73 (mandatory) | ALB $16 | $10 | **≈ $524** |
 | DOKS | Basic · 4/8 s | free ($0) | $12 | $10 | **≈ $166** |
 
-> DigitalOcean's shared droplets undercut Hetzner here, and EKS can't skip its $73 control-plane fee.
-> Fine — these are *HA* boilerplates; the fight that matters is below.
+> On the cheaper Intel line (3× CX33) this same config is **≈ $41**. EKS can't skip its $73
+> control-plane fee even non-HA.
 
 ### Medium · HA (prod baseline, ≈ this boilerplate's shape) — 4 workers @ **4 vCPU / 16 GB** + HA control plane · 2 LB · 500 GB
 
 | Provider | Worker × 4 | HA ctrl plane | LB | Storage | **Total/mo** | vs Hetzner |
 |---|---|---|--:|--:|--:|--:|
-| **Hetzner** | CCX23 · 4/16 **d** | 3× CPX21 (~$104) | 2× LB11 $16 | $31 | **≈ $529** | — |
-| GKE | e2-standard-4 · 4/16 s | regional $73 | 2× $37 | $50 | **≈ $590** | +12% |
-| EKS | m5.xlarge · 4/16 **d** | $73 | 2× ALB $33 | $48 | **≈ $825** | **+56%** |
-| DOKS | GP · 4/16 **d** | +$40 | 2× $24 | $50 | **≈ $618** | +17% |
+| **Hetzner** | CCX23 · 4/16 **d** | 3× CPX22 (~$63) | 2× LB11 $16 | $27 | **≈ $478** | — |
+| GKE | e2-standard-4 · 4/16 s | regional $73 | 2× $37 | $50 | **≈ $590** | +23% |
+| EKS | m5.xlarge · 4/16 **d** | $73 | 2× ALB $33 | $48 | **≈ $825** | **+73%** |
+| DOKS | GP · 4/16 **d** | +$40 | 2× $24 | $50 | **≈ $618** | +29% |
 
 ### Large · HA — 8 workers @ **8 vCPU / 32 GB** + HA control plane · 3 LB · 2 TB
 
 | Provider | Worker × 8 | HA ctrl plane | LB | Storage | **Total/mo** | vs Hetzner |
 |---|---|---|--:|--:|--:|--:|
-| **Hetzner** | CCX33 · 8/32 **d** | 3× CPX31 (~$203) | 3× LB11 $24 | $124 | **≈ $1,568** | — |
-| GKE | e2-standard-8 · 8/32 s | regional $73 | 3× $55 | $200 | **≈ $2,050** | +31% |
-| EKS | m5.2xlarge · 8/32 **d** | $73 | 3× ALB $49 | $190 | **≈ $2,999** | **+91%** |
-| DOKS | GP · 8/32 **d** | +$40 | 3× $36 | $200 | **≈ $2,292** | +46% |
+| **Hetzner** | CCX33 · 8/32 **d** | 3× CPX32 (~$115) | 3× LB11 $24 | $108 | **≈ $1,444** | — |
+| GKE | e2-standard-8 · 8/32 s | regional $73 | 3× $55 | $200 | **≈ $2,050** | +42% |
+| EKS | m5.2xlarge · 8/32 **d** | $73 | 3× ALB $49 | $190 | **≈ $2,999** | **+108%** |
+| DOKS | GP · 8/32 **d** | +$40 | 3× $36 | $200 | **≈ $2,292** | +59% |
+
+### Hetzner EU vs US — same cluster, two regions
+
+Hetzner's US locations (Ashburn / Hillsboro) are pricier — and the gap is *structural*, not just FX:
+
+| | EU (fsn / nbg / hel) | US (ash / hil) |
+|---|--:|--:|
+| Cheapest lines | **CX** €5.49 · **CAX** (Arm) €5.99 | ❌ not sold — **CPX / CCX only** |
+| Dedicated CCX23 (4/16) | €85.99 (~$93) | **$102.99** (+11%) |
+| Cheapest 3-node HA | **~$26** (3× CX23 + LB) | **~$70** (3× CPX11 + LB) |
+| Medium-HA config total | **~$478** | **~$516** (+8%) |
+| **Included traffic / server** | **20 TB** | **1 TB** (20× less) |
+
+The CPX/CCX shapes are identical specs in both regions (the US just kept the old `CPX11–51` names). The
+real US penalties are **(1)** no cheap Intel/Arm lines — your budget floor triples — and **(2)** 1 TB vs
+20 TB of included traffic per server, which is what actually bites a busy cluster. Stay in the EU unless
+you specifically need US latency.
 
 ### …then egress makes it a rout
 
 The tables above are *before traffic*. Push **5 TB/mo** outbound — a modest API/app load — and the
 gap explodes:
 
-| | Hetzner | DOKS | GKE | EKS |
+| | Hetzner (EU) | DOKS | GKE | EKS |
 |---|--:|--:|--:|--:|
 | Egress on 5 TB/mo | **$0** | **$0** | ≈ $600 | ≈ $450 |
 
-Hetzner includes **20 TB per server** (overage €1/TB); DigitalOcean pools a free multi-TB allotment.
+Hetzner EU includes **20 TB per server** (overage €1/TB); DigitalOcean pools a free multi-TB allotment.
 GKE bills **$0.12/GB** and EKS **$0.09/GB** — so on a busy prod cluster egress alone can cost more than
-the entire Hetzner bill.
+the entire Hetzner bill. (In US Hetzner regions the included allotment drops to 1 TB/server — still far
+above the hyperscalers' zero.)
 
 **The honest asterisks:** (1) "managed" clusters give you a vendor-run, SLA-backed control plane — here
 *you* own the three controllers, but Terraform + Ansible + ArgoCD in this repo stand them up and keep
 them healed, so the operational delta is small and the savings are not. (2) Prices are provider list
-rates as of 2026 (Hetzner post-June-2026 hike), €→$ at ~1.08; the hyperscalers drop 30–60% under
+rates as of 2026 (Hetzner = official post-June-2026 adjustment doc); the hyperscalers drop 30–60% under
 1–3yr commitments/savings plans, which Hetzner doesn't require because its list price is already lower.
 (3) GKE's `e2` rows are shared-vCPU; matching Hetzner's dedicated `CCX` with GKE `n2`/`c2` widens the
 gap further. Track your real bill with **[hetzner-cost-monitor](https://github.com/prehoy/hetzner-cost-monitor)**.
