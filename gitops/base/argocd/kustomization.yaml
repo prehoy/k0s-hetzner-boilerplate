@@ -1,0 +1,52 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: argocd
+
+# ArgoCD self-managed via kustomize — NO Helm. Official HA install manifest, pinned by tag; the
+# `argocd` Application (apps/argocd.yaml) syncs THIS path, so ArgoCD upgrades itself when the tag
+# below is bumped. bootstrap.sh applies the same path once by hand to get the ball rolling.
+resources:
+  - namespace.yaml
+  - https://raw.githubusercontent.com/argoproj/argo-cd/v3.4.4/manifests/ha/install.yaml
+
+# HA replica counts (redis-ha itself comes from the ha/install.yaml).
+replicas:
+  - name: argocd-server
+    count: 2
+  - name: argocd-repo-server
+    count: 2
+  - name: argocd-applicationset-controller
+    count: 2
+
+patches:
+  # Pin every ArgoCD component to the stable worker pool (off the small managers / cullable cas-pool),
+  # equivalent to the old helm global.nodeSelector.
+  - target: { kind: Deployment }
+    patch: |-
+      - op: add
+        path: /spec/template/spec/nodeSelector
+        value: { node-pool: static }
+  - target: { kind: StatefulSet }
+    patch: |-
+      - op: add
+        path: /spec/template/spec/nodeSelector
+        value: { node-pool: static }
+  # Serve HTTP (TLS terminates at Traefik) — equivalent to helm server.insecure=true.
+  - patch: |-
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: argocd-cmd-params-cm
+      data:
+        server.insecure: "true"
+  # Docker Hub pull secret on the repo-server (rate-limit avoidance), like the old helm values.
+  - patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: argocd-repo-server
+      spec:
+        template:
+          spec:
+            imagePullSecrets:
+              - name: dockerhub-cred

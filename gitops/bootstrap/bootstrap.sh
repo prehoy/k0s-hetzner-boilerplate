@@ -1,17 +1,15 @@
 #!/usr/bin/env bash
 # Idempotent GitOps bootstrap for the cluster.
 #
-# This is the only manual step after Terraform + Ansible have provisioned the cluster.
-# It installs ArgoCD, then hands control to GitOps: the root app-of-apps pulls in
-# sealed-secrets, ingress routes, monitoring, logging, and the rest of the platform.
+# Installs ArgoCD from its official HA kustomize manifest (pinned in ../base/argocd), then hands off
+# to the root app-of-apps. NO Helm — the ArgoCD `Application` self-manages the same kustomize path,
+# so upgrades are a version bump in ../base/argocd/kustomization.yaml.
 #
 # Prereqs:
 #   - KUBECONFIG points at the cluster (reach the private API via the WireGuard bastion)
-#   - helm + kubectl installed
+#   - kubectl installed
 #   - the repo deploy key registered in ArgoCD (see README.md)
-#   - BEFORE first sync of any SealedSecret: the sealing key exists so committed SealedSecrets
-#     decrypt (see ../certs/README.md). Either let the controller self-generate one, or:
-#       kubectl apply -f ../certs/sealing-key.secret.yaml   # gitignored; label = active
+#   - BEFORE first sync of any SealedSecret: the sealing key exists (see ../certs/README.md)
 #
 # Usage:
 #   export KUBECONFIG=~/.kube/cluster.conf
@@ -19,16 +17,14 @@
 set -euo pipefail
 
 DIR="$(cd "$(dirname "$0")" && pwd)"
-ARGOCD_CHART_VERSION="9.4.15"   # keep in sync with apps/argocd.yaml.deferred
 
-echo "==> Installing/upgrading ArgoCD via Helm"
-helm repo add argo https://argoproj.github.io/argo-helm >/dev/null 2>&1 || true
-helm repo update argo >/dev/null
-helm upgrade --install argocd argo/argo-cd \
-  --namespace argocd --create-namespace \
-  --version "$ARGOCD_CHART_VERSION" \
-  -f "$DIR/../base/argocd/values.yaml" \
-  --wait
+echo "==> Installing/upgrading ArgoCD (kustomize HA manifest, server-side apply)"
+# --server-side --force-conflicts: ArgoCD's CRDs exceed the client-side last-applied annotation limit,
+# and SSA lets a re-run reconcile fields cleanly.
+kubectl apply -k "$DIR/../base/argocd" --server-side --force-conflicts
+
+echo "==> Waiting for ArgoCD to come up"
+kubectl -n argocd rollout status deploy/argocd-server --timeout=300s
 
 echo "==> Applying root app-of-apps"
 kubectl apply -f "$DIR/root.yaml"

@@ -1,9 +1,8 @@
-# DEFERRED — ArgoCD self-management. Do NOT enable during the GitOps cutover.
-# Rename to argocd.yaml (so the root app-of-apps picks it up) only in Phase 4, AFTER
-# all prod apps are on Sealed Secrets and KSOPS is stripped from the repo-server.
-# Self-managing ArgoCD restarts its own components — do it last, in the window.
+# DEFERRED — ArgoCD self-management. Enable (rename to argocd.yaml) only after the rest of the
+# platform is converged; self-managing ArgoCD restarts its own components, so do it last.
 #
-# Keep the chart version in sync with gitops/bootstrap/bootstrap.sh (9.4.15).
+# Kustomize-based (no Helm): points at gitops/base/argocd, which pins the ArgoCD HA install manifest.
+# Bump the version tag there to upgrade — ArgoCD then rolls itself.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
@@ -11,18 +10,10 @@ metadata:
   namespace: argocd
 spec:
   project: default
-  # Multi-source: Helm chart from argo-helm, values from this git repo.
-  sources:
-    - repoURL: https://argoproj.github.io/argo-helm
-      chart: argo-cd
-      targetRevision: 9.4.15
-      helm:
-        releaseName: argocd
-        valueFiles:
-          - $values/gitops/base/argocd/values.yaml
-    - repoURL: git@github.com:YOUR_ORG/infra.git
-      targetRevision: main
-      ref: values
+  source:
+    repoURL: git@github.com:YOUR_ORG/infra.git
+    targetRevision: main
+    path: gitops/base/argocd
   destination:
     server: https://kubernetes.default.svc
     namespace: argocd
@@ -31,4 +22,5 @@ spec:
       prune: true
       selfHeal: true
     syncOptions:
+      # ArgoCD's CRDs are too large for the client-side last-applied annotation → server-side apply.
       - ServerSideApply=true
