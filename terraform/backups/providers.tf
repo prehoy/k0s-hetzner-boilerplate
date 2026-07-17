@@ -1,9 +1,3 @@
-provider "databasus" {
-  baseurl  = var.databasus_baseurl # e.g. https://databasus.bo.dashka.io/api/v1
-  email    = var.databasus_admin_email
-  password = var.databasus_admin_password
-}
-
 # Hetzner Object Storage (S3-compatible) — only to create the bucket. The S3 keys are generated
 # in the Hetzner Console (no Terraform resource exists for them) and passed via tfvars.
 provider "minio" {

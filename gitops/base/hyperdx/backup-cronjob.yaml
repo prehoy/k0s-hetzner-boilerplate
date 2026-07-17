@@ -1,6 +1,7 @@
-# Daily off-cluster backup of the HyperDX state to the Hetzner S3 bucket (same bucket the Postgres
-# `databasus` backups use, under a hyperdx/ prefix). The live data is already HA on NFS/DRBD, so this
-# guards against logical loss (corruption, accidental drop, split-brain) — not hardware failure.
+# Daily off-cluster backup of the HyperDX state to the Hetzner S3 bucket (the same bucket the
+# Postgres pgBackRest repo lives in, under a hyperdx/ prefix). The live data is already HA on
+# NFS/DRBD, so this guards against logical loss (corruption, accidental drop, split-brain) — not
+# hardware failure.
 #
 # Sequence (initContainers run in order, then main):
 #   1. mongodump   -> /work/mongodb-<ts>.archive.gz   (HyperDX config: dashboards, alerts, users)
@@ -17,7 +18,7 @@ metadata:
   name: hyperdx-backup
   namespace: observability
 spec:
-  schedule: "30 3 * * *"          # 03:30 daily (after the Postgres databasus window)
+  schedule: "30 3 * * *"          # 03:30 daily (after the 02:00 pgBackRest window)
   concurrencyPolicy: Forbid
   successfulJobsHistoryLimit: 1
   failedJobsHistoryLimit: 3

@@ -14,8 +14,8 @@ data "cloudflare_zone" "zone" {
 }
 
 locals {
-  bo_ip = hcloud_primary_ip.nat_ip.ip_address    # backoffice box public IP (Docker Swarm mgmt stack)
-  lb_ip = hcloud_floating_ip.lb_main.ip_address  # cluster LB floating IP (app ingress / traefik)
+  bo_ip = hcloud_primary_ip.nat_ip.ip_address   # backoffice box public IP (Docker Swarm mgmt stack)
+  lb_ip = hcloud_floating_ip.lb_main.ip_address # cluster LB floating IP (app ingress / traefik)
 
   # host (under var.domain) => target IP. Platform records only; add your app hosts here.
   dns_records = {
@@ -25,10 +25,9 @@ locals {
     "ci"      = local.lb_ip # Woodpecker CI
 
     # Backoffice mgmt stack (Docker Swarm box)
-    "swarmpit.bo"  = local.bo_ip # Swarmpit UI
-    "databasus.bo" = local.bo_ip # DB backup manager
-    "vpn.bo"       = local.bo_ip # WireGuard admin portal
-    "traefik.bo"   = local.bo_ip # backoffice Traefik
+    "swarmpit.bo" = local.bo_ip # Swarmpit UI
+    "vpn.bo"      = local.bo_ip # WireGuard admin portal
+    "traefik.bo"  = local.bo_ip # backoffice Traefik
 
     # Cross-served status pages: the gatus watching a plane runs on the OTHER plane.
     "status"    = local.bo_ip # public status page (backoffice gatus watches the cluster)

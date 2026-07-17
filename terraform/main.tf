@@ -288,3 +288,20 @@ resource "hcloud_server" "database_servers" {
     "role" = "database"
   }
 }
+
+# Postgres data lives on a dedicated volume, not the 80 GB root disk: PGDATA + the WAL it hasn't
+# archived yet must be able to grow without taking the OS down with it, and a volume can be grown
+# online later. ansible/playbooks/postgres/ mounts this at /mnt/HC_VOLUME (data_dir =
+# /mnt/HC_VOLUME/pg_data) by looking it up under /dev/disk/by-id/scsi-0HC_Volume_* — without it the
+# playbook fails at "Find HC Volume numeric ID" and Patroni never bootstraps.
+#
+# format="" / automount=false on purpose: the playbook owns mkfs + the fstab entry, and an automount
+# here would race it. Grow ONLY; Hetzner cannot shrink a volume.
+resource "hcloud_volume" "db_data" {
+  count     = 3
+  name      = "db-data-${count.index}"
+  size      = 50
+  server_id = hcloud_server.database_servers[count.index].id
+  automount = false
+  format    = "ext4"
+}

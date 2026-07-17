@@ -1,0 +1,15 @@
+# Incremental backup on the days the full doesn't run — deliberately non-overlapping, so a Sunday
+# never queues two backups against the same stanza lock.
+#
+# These only shorten replay time on restore; they are NOT the recovery point. WAL is archived
+# continuously by archive_command, so RPO is archive_timeout (60s), not this schedule.
+[Unit]
+Description=Daily pgBackRest incremental backup
+
+[Timer]
+Unit=pgbackrest@incr.service
+OnCalendar=Mon..Sat *-*-* 02:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

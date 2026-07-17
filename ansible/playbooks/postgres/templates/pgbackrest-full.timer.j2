@@ -1,0 +1,12 @@
+# Weekly full backup. With repo1-retention-full={{ pgbackrest_retention_full }} this sets how far
+# back PITR reaches: {{ pgbackrest_retention_full }} weeks.
+[Unit]
+Description=Weekly pgBackRest full backup
+
+[Timer]
+Unit=pgbackrest@full.service
+OnCalendar=Sun *-*-* 02:00:00
+Persistent=true    # if the node was down at 02:00, run once it's back rather than skipping the week
+
+[Install]
+WantedBy=timers.target
