@@ -46,10 +46,12 @@
       register: client_conf
       ignore_errors: true
 
+    # fetch resolves a relative dest against THIS playbook's directory, not the cwd — three levels up
+    # from playbooks/backoffice/backoffice_init/ is ansible/, next to wireguard.conf.example.
     - name: Save Client Configuration to Control Node
       fetch:
         src: /etc/wireguard/client.conf
-        dest: ../../wireguard.conf
+        dest: ../../../wireguard.conf
         flat: yes
 
   handlers:
