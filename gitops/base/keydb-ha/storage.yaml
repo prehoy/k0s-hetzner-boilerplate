@@ -1,0 +1,83 @@
+# Node-local disk for the KeyDB pods — deliberately NOT NFS.
+#
+# KeyDB runs `appendonly yes`, so every write fsyncs to this volume. On NFS that fsync is a network
+# round-trip (and the DRBD/VIP failover under it freezes I/O for seconds), which is a poor trade for a
+# store whose durability already comes from 3-way replication + Sentinel failover. Local disk keeps
+# the AOF write cheap; losing a node is a replica loss, which is exactly what the HA stack is for.
+#
+# Static PVs, no provisioner: the set is fixed at 3, matching the StatefulSet. WaitForFirstConsumer
+# makes the scheduler place each pod before binding, so a pod lands on the node holding its data.
+# Each PV is on a different node, so the 3 PVCs necessarily bind to 3 different nodes — that also
+# gives us hard anti-affinity for free, on top of the soft podAntiAffinity in statefulset.yaml.
+#
+# Trade-off: a local PV is bound to its node forever. If a node is lost for good, delete the PV +
+# its PVC and recreate them against the replacement node; the pod resyncs from the master.
+#
+# Requires /var/lib/keydb-ha on each node — created by ansible/playbooks/k0s_main/add_workers.
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata: { name: keydb-local }
+provisioner: kubernetes.io/no-provisioner
+volumeBindingMode: WaitForFirstConsumer
+reclaimPolicy: Retain    # a PVC delete must never wipe the AOF
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata: { name: keydb-ha-worker-0 }
+spec:
+  capacity: { storage: 2Gi }
+  accessModes: [ReadWriteOnce]
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: keydb-local
+  local: { path: /var/lib/keydb-ha }
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - { key: kubernetes.io/hostname, operator: In, values: ["k0s-worker-0"] }
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata: { name: keydb-ha-worker-1 }
+spec:
+  capacity: { storage: 2Gi }
+  accessModes: [ReadWriteOnce]
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: keydb-local
+  local: { path: /var/lib/keydb-ha }
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - { key: kubernetes.io/hostname, operator: In, values: ["k0s-worker-1"] }
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata: { name: keydb-ha-worker-2 }
+spec:
+  capacity: { storage: 2Gi }
+  accessModes: [ReadWriteOnce]
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: keydb-local
+  local: { path: /var/lib/keydb-ha }
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - { key: kubernetes.io/hostname, operator: In, values: ["k0s-worker-2"] }
+---
+# A drain must never take 2 of 3 pods: that drops Sentinel below its quorum of 2, so nothing can
+# elect a master and the stack is down until the pods return.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata: { name: keydb-ha, namespace: data }
+spec:
+  maxUnavailable: 1
+  selector: { matchLabels: { app: keydb-ha } }
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata: { name: keydb-ha-haproxy, namespace: data }
+spec:
+  maxUnavailable: 1
+  selector: { matchLabels: { app: keydb-ha-haproxy } }
