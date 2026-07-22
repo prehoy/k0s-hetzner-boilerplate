@@ -1,5 +1,5 @@
 # In-cluster Gatus -> served at status.bo.example.com (BACKEND status page). Watches the management plane
-# (swarmpit/vpn/databasus) from inside the cluster (independent of the mgmt node) + cluster infra
+# (swarmpit/vpn) from inside the cluster (independent of the mgmt node) + cluster infra
 # (argocd/logs). The production page (status.example.com) is the mgmt-node gatus watching the apps.
 ui:
   title: "Status"
@@ -56,12 +56,6 @@ endpoints:
   - name: vpn
     group: Management
     url: https://vpn.bo.example.com
-    interval: 60s
-    conditions: *conditions
-    alerts: *alerts
-  - name: databasus
-    group: Management
-    url: https://databasus.bo.example.com
     interval: 60s
     conditions: *conditions
     alerts: *alerts

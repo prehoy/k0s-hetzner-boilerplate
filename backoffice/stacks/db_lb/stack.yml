@@ -1,12 +1,12 @@
 # db_lb — Patroni leader/replica TCP router for the prod backoffice Swarm (HAProxy).
-# Gives Swarm services (e.g. Databasus) a stable, failover-following Postgres endpoint:
+# Gives Swarm services a stable, failover-following Postgres endpoint:
 #   db-lb:5432  -> current leader  (writes)
-#   db-lb:5433  -> replicas        (reads / backups — keeps load off the primary)
+#   db-lb:5433  -> replicas        (reads — keeps load off the primary)
 # Reaches Patroni at 10.0.0.100-102 over the private network. Session-level (plain TCP),
 # so pg_dump works (unlike a transaction pooler). Config: ./haproxy.cfg.
 #
 # On the shared `traefik-public` overlay (no traefik labels, so it's not exposed) with a
-# `db-lb` alias, so Databasus — already on that network — resolves `db-lb` by name.
+# `db-lb` alias, so any service on that network resolves `db-lb` by name.
 version: "3.8"
 
 services:

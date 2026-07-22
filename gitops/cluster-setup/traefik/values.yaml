@@ -51,21 +51,11 @@ api:
   dashboard: true
   insecure: false
 
-certificatesResolvers:
-  letsencrypt:
-    acme:
-      email: office@example.com
-      storage: /data/acme.json
-      dnsChallenge:
-        provider: cloudflare
-        delayBeforeCheck: 0
-
-env:
-  - name: CLOUDFLARE_DNS_API_TOKEN
-    valueFrom:
-      secretKeyRef:
-        name: cloudflare-api-token
-        key: CF_API_TOKEN
+# No certificatesResolvers / ACME here on purpose. This is a DaemonSet on every node, and N pods each
+# running their own ACME resolver into an emptyDir floods Let's Encrypt (duplicate-cert limit) and
+# races on the _acme-challenge record. cert-manager issues a single wildcard into the `wildcard-tls`
+# Secret, and the default TLSStore (gitops/base/cert-manager/) serves it to every router. Traefik does
+# zero ACME, so `persistence` below is intentionally off — there's no acme.json to keep.
 
 experimental:
   fastProxy: {}
@@ -81,8 +71,7 @@ ingressRoute:
     matchRule: Host(`traefik.example.com`)
     middlewares:
       - name: dashboard-auth
-    tls:
-      certResolver: letsencrypt
+    tls: {}   # TLS on; served the wildcard from the default TLSStore (no per-route ACME)
 
 extraObjects:
   - apiVersion: v1

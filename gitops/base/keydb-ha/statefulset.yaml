@@ -1,6 +1,6 @@
-# KeyDB StatefulSet: 3 pods, each = keydb + sentinel sidecar. Per-pod RWO volume (nfs-client),
-# spread across nodes (anti-affinity) on the static pool. Master/replica role is resolved at start
-# by keydb-start.sh via Sentinel (see config.yaml).
+# KeyDB StatefulSet: 3 pods, each = keydb + sentinel sidecar. Per-pod RWO volume on node-local disk
+# (see storage.yaml), spread across nodes (anti-affinity) on the static pool. Master/replica role is
+# resolved at start by keydb-start.sh via Sentinel (see config.yaml).
 apiVersion: apps/v1
 kind: StatefulSet
 metadata: { name: keydb-ha, namespace: data }
@@ -50,6 +50,7 @@ spec:
             - { name: KEYDB_PASSWORD, valueFrom: { secretKeyRef: { name: keydb-secret, key: KEYDB_PASSWORD } } }
           volumeMounts:
             - { name: scripts, mountPath: /scripts }
+            - { name: data,    mountPath: /data }   # sentinel.conf lives here — it's sentinel's memory across restarts
           resources:
             requests: { cpu: "20m",  memory: "32Mi" }
             limits:   { cpu: "200m", memory: "64Mi" }
@@ -60,5 +61,5 @@ spec:
     - metadata: { name: data }
       spec:
         accessModes: [ReadWriteOnce]
-        storageClassName: nfs-client
+        storageClassName: keydb-local   # node-local disk, not NFS — see storage.yaml
         resources: { requests: { storage: 2Gi } }

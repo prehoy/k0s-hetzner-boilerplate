@@ -1,9 +1,24 @@
 - name: Set up PostgreSQL cluster
   hosts: db
   become: true
+  vars_files:
+    - secrets.yml          # S3 keys + repo cipher passphrase (see secrets.yml.example)
   vars:
     data_dir: /mnt/HC_VOLUME/pg_data
     bin_dir: /usr/lib/postgresql/18/bin/
+    # Patroni cluster name. Doubles as the pgBackRest stanza name — patroni.yml.j2 and
+    # pgbackrest.conf.j2 both read this, so they can't drift apart.
+    patroni_scope: infra_cluster
+    # The cluster superuser initdb creates. pgBackRest connects to Postgres as this role (there is no
+    # `postgres` role on a Patroni-bootstrapped cluster), so both templates read it from here.
+    patroni_superuser: postgres
+    # pgBackRest repo (Hetzner Object Storage). The bucket is created by terraform/backups/, and
+    # `pgbackrest_s3_bucket` comes from secrets.yml so there is ONE value shared with that module —
+    # a play var here would silently win over vars_files and let the two drift apart.
+    pgbackrest_s3_endpoint: hel1.your-objectstorage.com   # host only, no scheme
+    pgbackrest_s3_region: hel1
+    pgbackrest_repo_path: /pgbackrest
+    pgbackrest_retention_full: 4    # 4 weekly fulls => PITR reaches back ~1 month
 
   tasks:
     - name: Update and Upgrade APT
@@ -232,6 +247,64 @@
         etcd_hosts: >-
           {% for host in groups['db'] %}{{ host }}:2379{% if not loop.last %},{% endif %}{% endfor %}
 
+    # ---- pgBackRest: continuous WAL archiving + backups to object storage ----
+    # Configured BEFORE Patroni starts Postgres: archive_mode=on means Postgres begins calling
+    # archive_command immediately, and a missing config would just pile WAL up in pg_wal.
+    - name: Install pgbackrest and curl
+      apt:
+        name:
+          - pgbackrest   # from the pgdg repo added above
+          - curl         # the backup timers use it to ask Patroni who the leader is
+        state: present
+
+    - name: Create pgbackrest config directory
+      file:
+        path: /etc/pgbackrest
+        state: directory
+        owner: postgres
+        group: postgres
+        mode: 0750
+
+    - name: Create pgbackrest log directory
+      file:
+        path: /var/log/pgbackrest
+        state: directory
+        owner: postgres
+        group: postgres
+        mode: 0750
+
+    # 0640 postgres:postgres — holds the S3 keys and the repo cipher passphrase, and is read by
+    # archive_command, which Postgres runs as the postgres user.
+    - name: Set pgbackrest config
+      template:
+        src: pgbackrest.conf.j2
+        dest: /etc/pgbackrest/pgbackrest.conf
+        owner: postgres
+        group: postgres
+        mode: 0640
+
+    - name: Install pgbackrest backup units
+      template:
+        src: "{{ item }}.j2"
+        dest: /etc/systemd/system/{{ item }}
+        owner: root
+        group: root
+        mode: 0644
+      loop:
+        - pgbackrest@.service
+        - pgbackrest-full.timer
+        - pgbackrest-incr.timer
+
+    - name: Enable pgbackrest backup timers
+      systemd:
+        name: "{{ item }}"
+        state: started
+        enabled: yes
+        daemon_reload: yes
+      loop:
+        - pgbackrest-full.timer
+        - pgbackrest-incr.timer
+
     - name: Create Patroni Log Directory
       file:
         path: /etc/patroni/logs
@@ -277,3 +350,72 @@
     - name: Show patroni members list
       debug:
         var: patroni_members_list.stdout_lines
+
+    # ---- initialise the pgBackRest repository ----
+    # Two steps, because /leader answers 503 both when the node is a replica AND when no leader
+    # exists at all. Waiting on /leader per-host can't tell those apart, so a cluster that never
+    # elected anyone would look like "all replicas" and every task below would skip — leaving no
+    # stanza and no backups, silently. /cluster reports the whole cluster from ANY member, so ask it
+    # first and fail loudly if nobody is leading; only then is a 503 on /leader trustworthy.
+    - name: Wait for a Patroni leader to be elected
+      uri:
+        url: http://localhost:8008/cluster
+      register: patroni_cluster
+      until: patroni_cluster.json.members | selectattr('role', 'equalto', 'leader') | list | length == 1
+      retries: 30
+      delay: 5
+      run_once: true
+      changed_when: false
+
+    - name: Identify the leader
+      uri:
+        url: http://localhost:8008/leader
+        status_code: [200, 503]     # 200 = this node leads, 503 = replica. Exactly one node gets 200.
+      register: patroni_leader
+      changed_when: false
+
+    - name: Create the pgbackrest stanza (leader only)
+      command: pgbackrest --stanza={{ patroni_scope }} stanza-create
+      become_user: postgres
+      when: patroni_leader.status == 200
+      register: stanza_create
+      changed_when: "'already exists' not in (stanza_create.stdout | default('') ~ stanza_create.stderr | default(''))"
+
+    # Proves the whole chain end to end rather than just that a config file exists: pgbackrest forces
+    # a WAL switch, then confirms the segment actually landed in the S3 repo. Fails loudly on a bad
+    # S3 key, a missing bucket, a wrong endpoint, or an archive_command that never took effect.
+    - name: Verify archiving reaches the repo (leader only)
+      command: pgbackrest --stanza={{ patroni_scope }} check
+      become_user: postgres
+      when: patroni_leader.status == 200
+      changed_when: false
+
+    - name: Look for an existing backup (leader only)
+      command: pgbackrest --stanza={{ patroni_scope }} info --output=json
+      become_user: postgres
+      when: patroni_leader.status == 200
+      register: pgbackrest_info
+      changed_when: false
+
+    # Seed the repo with one full backup, otherwise there's no base for WAL to replay onto — archived
+    # WAL alone restores nothing, and Patroni's pgbackrest replica method has no backup to restore
+    # from. Guarded on the repo being empty: the weekly timer owns every full backup after this one,
+    # and a full backup on every playbook re-run would be an expensive surprise.
+    - name: Take the first full backup (leader only, once)
+      command: pgbackrest --stanza={{ patroni_scope }} --type=full backup
+      become_user: postgres
+      when:
+        - patroni_leader.status == 200
+        - (pgbackrest_info.stdout | from_json | first).backup | length == 0
+
+    - name: Show the repository state
+      command: pgbackrest --stanza={{ patroni_scope }} info
+      become_user: postgres
+      when: patroni_leader.status == 200
+      register: pgbackrest_final_info
+      changed_when: false
+
+    - name: Print the repository state
+      debug:
+        var: pgbackrest_final_info.stdout_lines
+      when: patroni_leader.status == 200

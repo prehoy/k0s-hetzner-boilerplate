@@ -94,8 +94,10 @@
         host: "{{ internal_ip }}"
         timeout: 600
 
+    # fetch resolves a relative dest against THIS playbook's directory, not the cwd — three levels up
+    # from playbooks/k0s_main/init_k0s/ is ansible/, where BUILD.md expects it (`KUBECONFIG=$PWD/...`).
     - name: Save kubeconfig to current machine
       fetch:
         src: /var/lib/k0s/pki/admin.conf
-        dest: ../../main_kubeconfig.conf
+        dest: ../../../main_kubeconfig.conf
         flat: yes

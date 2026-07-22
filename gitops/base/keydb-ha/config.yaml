@@ -23,12 +23,20 @@ data:
   sentinel-start.sh: |
     #!/bin/sh
     # Sentinel sidecar (one per keydb pod => 3 sentinels, quorum 2).
+    #
+    # The config lives on the pod's data volume and is written ONCE, on first boot. Sentinel rewrites
+    # this file in place as state changes (current master, its own run id, peer sentinels), and that
+    # file IS its memory. Regenerating it every start would make a full-cluster restart amnesiac: no
+    # sentinel would know the master, every pod would fall back to the pod-0 seed below, and if pod-0
+    # were a stale replica from an earlier failover the whole cluster would resync off stale data.
     set -eu
     PW="$KEYDB_PASSWORD"
-    SEED="keydb-ha-0.keydb-ha.${POD_NAMESPACE}.svc.cluster.local"
-    MASTER=$(keydb-cli -h keydb-ha -p 26379 sentinel get-master-addr-by-name keydb 2>/dev/null | head -1 || true)
-    [ -z "$MASTER" ] && MASTER="$SEED"
-    cat > /tmp/sentinel.conf <<EOF
+    CONF=/data/sentinel.conf
+    if [ ! -f "$CONF" ]; then
+      SEED="keydb-ha-0.keydb-ha.${POD_NAMESPACE}.svc.cluster.local"
+      MASTER=$(keydb-cli -h keydb-ha -p 26379 sentinel get-master-addr-by-name keydb 2>/dev/null | head -1 || true)
+      [ -z "$MASTER" ] && MASTER="$SEED"
+      cat > "$CONF" <<EOF
     port 26379
     sentinel resolve-hostnames yes
     sentinel announce-hostnames yes
@@ -38,7 +46,8 @@ data:
     sentinel failover-timeout keydb 60000
     sentinel parallel-syncs keydb 1
     EOF
-    exec keydb-sentinel /tmp/sentinel.conf
+    fi
+    exec keydb-sentinel "$CONF"
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -48,6 +57,11 @@ data:
     port 6379
     dir /data
     server-threads 2
+    # maxmemory-policy is noeviction (this carries queues — dropping keys silently loses jobs), so
+    # without a maxmemory the cgroup limit is the only ceiling and growth ends in an OOM kill of the
+    # master rather than an error to the writer. Set below the 512Mi limit, leaving headroom for the
+    # AOF buffer and COW during a fork: writes get -OOM, the pod stays up, no failover.
+    maxmemory 350mb
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -94,6 +108,11 @@ data:
       tcp-check send info\ replication\r\n
       tcp-check expect string role:master
       tcp-check send QUIT\r\n
-      server keydb-0 keydb-ha-0.keydb-ha.data.svc.cluster.local:6379 check inter 1s fall 3 rise 2 resolvers k8s init-addr none
-      server keydb-1 keydb-ha-1.keydb-ha.data.svc.cluster.local:6379 check inter 1s fall 3 rise 2 resolvers k8s init-addr none
-      server keydb-2 keydb-ha-2.keydb-ha.data.svc.cluster.local:6379 check inter 1s fall 3 rise 2 resolvers k8s init-addr none
+      # on-marked-down shutdown-sessions is what makes a failover reach existing clients. Without it
+      # HAProxy only routes NEW connections to the promoted master; connections already open to the
+      # demoted one stay up — and with `timeout client/server 24h` they stay up ~forever, now talking
+      # to a read-only replica. Every write on them fails -READONLY until the client is restarted by
+      # hand. Killing the sessions forces clients to reconnect, landing them on the new master.
+      server keydb-0 keydb-ha-0.keydb-ha.data.svc.cluster.local:6379 check inter 1s fall 3 rise 2 resolvers k8s init-addr none on-marked-down shutdown-sessions
+      server keydb-1 keydb-ha-1.keydb-ha.data.svc.cluster.local:6379 check inter 1s fall 3 rise 2 resolvers k8s init-addr none on-marked-down shutdown-sessions
+      server keydb-2 keydb-ha-2.keydb-ha.data.svc.cluster.local:6379 check inter 1s fall 3 rise 2 resolvers k8s init-addr none on-marked-down shutdown-sessions

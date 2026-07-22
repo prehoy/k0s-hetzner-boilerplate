@@ -1,0 +1,36 @@
+# One wildcard cert for every in-cluster host, and the default TLSStore that serves it.
+#
+# Two SANs because a single-label wildcard doesn't cross a dot: *.example.com covers argocd/grafana/
+# ci/logs/prometheus/alertmanager/traefik, but status.bo.example.com needs *.bo.example.com.
+#
+# cert-manager writes the cert into the `wildcard-tls` Secret in the traefik namespace; the default
+# TLSStore points Traefik at it. Every IngressRoute then just sets `tls: {}` (TLS on, no per-route
+# cert) and gets this wildcard — no cert config duplicated across namespaces, one cert to renew.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: wildcard-example-com
+  namespace: traefik
+spec:
+  secretName: wildcard-tls
+  # Dry-run against staging first by switching this to letsencrypt-staging, then flip back to prod.
+  issuerRef:
+    name: letsencrypt-prod
+    kind: ClusterIssuer
+  privateKey:
+    rotationPolicy: Always
+  commonName: "*.example.com"
+  dnsNames:
+    - "*.example.com"
+    - "*.bo.example.com"
+---
+# The store named `default` is special in Traefik: routers that enable TLS without naming a cert use
+# its defaultCertificate. One of these per cluster.
+apiVersion: traefik.io/v1alpha1
+kind: TLSStore
+metadata:
+  name: default
+  namespace: traefik
+spec:
+  defaultCertificate:
+    secretName: wildcard-tls

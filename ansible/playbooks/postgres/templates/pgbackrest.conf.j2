@@ -1,0 +1,50 @@
+# pgBackRest — WAL archive + backup repository on Hetzner Object Storage (S3-compatible).
+# Rendered by ansible/playbooks/postgres/playbook.yaml. Identical on all three DB nodes: every node
+# points at the SAME repo, because after a failover any node may become the one archiving WAL.
+#
+# Read by the postgres user (archive_command runs as postgres), hence 0640 postgres:postgres.
+
+[global]
+repo1-type=s3
+repo1-path={{ pgbackrest_repo_path }}
+repo1-s3-bucket={{ pgbackrest_s3_bucket }}
+repo1-s3-endpoint={{ pgbackrest_s3_endpoint }}
+repo1-s3-region={{ pgbackrest_s3_region }}
+repo1-s3-key={{ pgbackrest_s3_access_key }}
+repo1-s3-key-secret={{ pgbackrest_s3_secret_key }}
+# Hetzner supports virtual-hosted style (the pgBackRest default). Switch to `path` if your bucket
+# name contains dots, which would break TLS certificate matching on the vhost name.
+repo1-s3-uri-style=host
+
+# Backups hold every row in the cluster and live in object storage, off our infrastructure —
+# encrypt them at rest. WITHOUT THE PASSPHRASE THE REPOSITORY IS UNREADABLE: keep
+# pgbackrest_cipher_pass somewhere you'd still have if this whole project burned down. It is not
+# recoverable from the repo, the DB, or Hetzner.
+repo1-cipher-type=aes-256-cbc
+repo1-cipher-pass={{ pgbackrest_cipher_pass }}
+
+# Retention: keep {{ pgbackrest_retention_full }} full backups. WAL is expired along with the full
+# backup it belongs to, so this also bounds archive growth — PITR reaches back to the oldest full.
+repo1-retention-full={{ pgbackrest_retention_full }}
+repo1-retention-full-type=count
+
+compress-type=zst
+process-max=2
+log-level-console=info
+log-level-file=detail
+# NOTE: pgBackRest's ini parser takes the whole rest of the line as the value — an inline `# comment`
+# after a setting becomes part of it ("y  # ..." is not a boolean). Comments get their own line.
+# Checkpoint immediately rather than waiting out checkpoint_timeout before a backup starts.
+start-fast=y
+# Backup/restore by checksum, skipping unchanged files.
+delta=y
+
+# Stanza = this Patroni cluster. Name matches `scope:` in patroni.yml.j2 — keep them in sync.
+[{{ patroni_scope }}]
+pg1-path={{ data_dir }}
+pg1-port=5432
+# pgBackRest connects over the local socket and defaults the DB user to its OS user (postgres). This
+# cluster's superuser is `patroni_superuser`, and initdb never creates a `postgres` role — without
+# this, stanza-create dies with 'role "postgres" does not exist' -> "unable to find primary cluster".
+# Patroni's pg_hba has `local all all trust`, so no password is needed on the socket.
+pg1-user={{ patroni_superuser }}

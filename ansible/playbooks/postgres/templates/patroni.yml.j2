@@ -1,4 +1,4 @@
-scope: infra_cluster
+scope: {{ patroni_scope }}
 name: {{ ansible_hostname }}
 
 log:
@@ -33,8 +33,8 @@ bootstrap:
         synchronous_commit: off
         hot_standby: "on"
         # Standbys tell the primary which row versions they still need, so VACUUM won't remove
-        # them mid-query. Required for long reads on a replica (e.g. Databasus pg_dump via
-        # db-lb:5433) — without it, high-churn DBs hit "canceling statement due to conflict with
+        # them mid-query. Required for long reads on a replica (e.g. a reporting query or a pg_dump
+        # via db-lb:5433) — without it, high-churn DBs hit "canceling statement due to conflict with
         # recovery". Applied live to the running cluster via `patronictl edit-config`.
         hot_standby_feedback: "on"
         # Raised from the default 100: each migrated app runs a PgCat sidecar (pool_size ~20), so the
@@ -42,6 +42,19 @@ bootstrap:
         # is a ceiling — real backends stay bounded by the PgCat pools. Applied live to the running
         # cluster via the Patroni REST /config + rolling restart; baked here for cluster (re)creation.
         max_connections: 1000
+
+        # Continuous WAL archiving to the pgBackRest repo (Hetzner Object Storage). This — not the
+        # nightly backup — is what sets the recovery point: every completed WAL segment ships within
+        # archive_timeout, so RPO is ~60s and PITR can land on any moment since the oldest full backup.
+        # Streaming replication to the other two nodes covers node failure; this covers the things
+        # replication faithfully copies, like a DROP TABLE or a bad migration.
+        #
+        # archive_mode needs a RESTART, not a reload — on an already-bootstrapped cluster Patroni will
+        # show "pending restart" until `patronictl restart infra_cluster`. Also note bootstrap.dcs only
+        # seeds a NEW cluster: to apply this to a running one use `patronictl edit-config`.
+        archive_mode: "on"
+        archive_command: 'pgbackrest --stanza={{ patroni_scope }} archive-push %p'
+        archive_timeout: 60s
 
   initdb:
   - encoding: UTF8
@@ -56,10 +69,22 @@ postgresql:
   connect_address: {{ ansible_default_ipv4.address }}:5432
   data_dir: {{data_dir}}
   bin_dir: {{bin_dir}}
+
+  # Build a new/rejoining replica from the pgBackRest repo instead of pg_basebackup off the leader:
+  # the restore reads object storage, so re-seeding a node doesn't push a full copy of the cluster
+  # through the leader while it's serving traffic. basebackup stays as the fallback for when the repo
+  # is unreachable or the stanza doesn't exist yet (i.e. the very first bootstrap).
+  create_replica_methods:
+    - pgbackrest
+    - basebackup
+  pgbackrest:
+    command: /usr/bin/pgbackrest --stanza={{ patroni_scope }} --delta restore
+    keep_data: True
+    no_params: True
   authentication:
     replication:
       username: replicator
       password: CHANGEME_patroni_password
     superuser:
-      username: igor
+      username: {{ patroni_superuser }}
       password: CHANGEME_patroni_password

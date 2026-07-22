@@ -74,6 +74,7 @@ Every layer removes a single point of failure. The "Implemented in" column point
 | **Workers** | N workers + Hetzner cluster-autoscaler | node loss / load spikes | `gitops/base/cluster-autoscaler` |
 | **Storage (RWX)** | DRBD NFS pair, keepalived alias-IP `10.0.0.199`, diskless tiebreaker for quorum | 1 NFS node down | `ansible/playbooks/nfs/nfs_ha` |
 | **Database** | 3-node Patroni (1 primary + 2 replicas), automatic failover | primary loss | `ansible/playbooks/postgres` |
+| **Database (data loss)** | pgBackRest: continuous WAL archiving to object storage, ~60s RPO, PITR | `DROP TABLE`, bad migration — the things replicas faithfully copy | `ansible/playbooks/postgres` |
 | **DNS** | Cloudflare as-code, low TTL | record drift / fast cutover | `terraform/cloudflare.tf` |
 | **Egress (NAT)** | NAT-HA on the LB pair (route → `10.0.0.210`) | NAT node down | `ansible/playbooks/loadbalancer` |
 | **GitOps** | ArgoCD self-heal + app-of-apps | config drift / manual change | `gitops/` |
@@ -82,12 +83,13 @@ Every layer removes a single point of failure. The "Implemented in" column point
 ## What's inside
 
 ```
-terraform/   Hetzner servers/network/volumes/floating IPs + Cloudflare DNS  (+ databasus/ for backups)
-ansible/     k0s install, LB/keepalived, DRBD NFS, Patroni Postgres, WireGuard, node tuning
+up           one command to build the whole thing (or any single step) — see docs/BUILD.md
+terraform/   Hetzner servers/network/volumes/floating IPs + Cloudflare DNS  (+ backups/ for the backup bucket)
+ansible/     k0s install, LB/keepalived, DRBD NFS, Patroni Postgres + pgBackRest, WireGuard, node tuning
 gitops/      ArgoCD app-of-apps: sealed-secrets, traefik, nfs-provisioner, cluster-autoscaler,
              monitoring (Prometheus/Grafana/Alertmanager), hyperdx + otel logs, tetragon, keydb,
              db-access, gatus, woodpecker CI
-backoffice/  Docker-Swarm management box: WireGuard VPN, swarmpit, gatus, databasus, db_lb, traefik
+backoffice/  Docker-Swarm management box: WireGuard VPN, swarmpit, gatus, db_lb, traefik
 docs/        BUILD.md (full runbook) · ADDING_NEW_SERVICE.md
 ```
 
@@ -107,18 +109,31 @@ workers `.50–.99`, db `.100–.149`, backoffice `.150`, nfs `.200–.209`, lb 
 4. Generate a fresh Sealed-Secrets sealing key and **reseal** the placeholder `sealedsecret.yaml`
    files — they contain no real secret (`gitops/certs/README.md`).
 
-## Bootstrap order
+## Bootstrap
 
-```
-terraform apply
-  → ansible: backoffice + loadbalancer
-  → ansible: k0s init → add_managers → add_workers
-  → ansible: nfs_ha → postgres → node tuning
-  → terraform/databasus apply        (optional, DB backups)
-  → gitops/bootstrap/bootstrap.sh    (ArgoCD app-of-apps)
+```bash
+./up
 ```
 
-Full step-by-step with commands: **[`docs/BUILD.md`](docs/BUILD.md)**.
+That's the whole thing. It asks for the three secrets it can't generate — a Hetzner API token, a
+Cloudflare API token, and Hetzner Object Storage keys — generates everything else (SSH keypair, VRRP
+password, backup cipher passphrase), and builds the cluster. You also need a domain whose Cloudflare
+zone already exists.
+
+Each step is individually re-runnable (`./up k0s`), so a failure resumes rather than starting over.
+
+```
+init  → check      preflight: tools, config, tokens — before anything is provisioned
+      → infra      terraform apply: servers, network, volumes, floating IPs, DNS
+      → inventory  ansible/inventory rendered from terraform state (no hand-copied IPs)
+      → backoffice + vpn + lb
+      → k0s        init → add_managers → add_workers
+      → bucket     terraform/backups apply  (must precede postgres)
+      → stateful   nfs_ha → postgres + pgBackRest → node tuning
+      → gitops     bootstrap.sh (ArgoCD app-of-apps)
+```
+
+What each step does, and the long-form commands: **[`docs/BUILD.md`](docs/BUILD.md)**.
 
 ## What it costs — vs managed GKE / EKS / DOKS
 

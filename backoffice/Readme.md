@@ -25,7 +25,6 @@ SOPS-decrypt each stack's secrets → `docker stack deploy` every stack under `s
 | traefik | (edge) | TLS via Let's Encrypt + Cloudflare DNS-01 (SOPS Docker secret) |
 | swarmpit | `swarmpit.bo.example.com` | Swarm management UI (app + couchdb + influxdb + global agent) |
 | gatus | `status.bo.example.com` | code-defined health monitoring (replaced uptime-kuma). Endpoints in `stacks/gatus/config.yaml` (IaC); Brevo SMTP email alerts, password injected as `$SMTP_PASSWORD` from `gatus.env.sops` |
-| databasus | `databasus.bo.example.com` | DB backup manager (Postgres/MySQL/Mongo); reaches Patroni nodes over the private net; first-run admin + targets set in the UI |
 | wg-portal | `vpn.bo.example.com` | WireGuard admin UI; host-network Swarm service (`cap_add: NET_ADMIN`) managing the kernel `wg0`. Config (admin/session secrets) in `config.yaml.sops`. Traefik reaches it via the file provider (`stacks/traefik/dynamic/wg-portal.yml` → `172.18.0.1:8888`); UFW allows only the docker bridge to `:8888`. |
 
 DNS: point `*.bo.example.com` A-records at the backoffice box public IP (Cloudflare).

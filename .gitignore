@@ -11,7 +11,13 @@ errored.tfstate
 override.tf
 override.tf.json
 
+# --- Generated ---
+# Rendered from terraform state by `./up inventory` — holds real IPs. inventory.example documents
+# the format; this is the artifact.
+ansible/inventory
+
 # --- Secrets / keys / credentials ---
+.env
 *.pub
 !*.pub.example
 .hcloud_token

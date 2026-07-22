@@ -137,3 +137,14 @@
             port: 10250
             host: "{{ internal_ip }}"
             timeout: 300
+
+    # Backing dir for the KeyDB local PVs (gitops/base/keydb-ha/storage.yaml). A `local` PV does not
+    # create its path — the pod just fails to mount if it's missing. Outside the block above so it's
+    # applied on re-runs too; harmless on workers that hold no keydb PV.
+    - name: Ensure the KeyDB local-PV directory exists
+      file:
+        path: /var/lib/keydb-ha
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"

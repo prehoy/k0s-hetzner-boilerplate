@@ -1,0 +1,20 @@
+# Templated: %i is the backup type (full|incr). Driven by pgbackrest-full.timer / pgbackrest-incr.timer.
+[Unit]
+Description=pgBackRest %i backup
+Wants=network-online.target
+After=network-online.target patroni.service
+
+[Service]
+Type=oneshot
+User=postgres
+
+# All three nodes run these timers, but only the leader may take a backup — pgBackRest would
+# otherwise have three nodes writing the same stanza. Patroni's REST API answers 200 on /leader
+# only on the current leader, so this follows a failover with no reconfiguration. A non-2xx makes
+# curl exit 22, and any ExecCondition exit in 1..254 skips the unit silently rather than failing it.
+ExecCondition=/usr/bin/curl -sf -o /dev/null http://localhost:8008/leader
+
+ExecStart=/usr/bin/pgbackrest --stanza={{ patroni_scope }} --type=%i backup
+
+[Install]
+WantedBy=multi-user.target

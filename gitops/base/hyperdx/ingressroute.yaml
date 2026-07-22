@@ -1,4 +1,4 @@
-# HyperDX UI at logs.example.com. Main-cluster Traefik (k0s extension) certResolver is "letsencrypt".
+# HyperDX UI at logs.example.com. TLS is the cluster wildcard from the default TLSStore (cert-manager).
 apiVersion: traefik.io/v1alpha1
 kind: IngressRoute
 metadata:
@@ -13,5 +13,4 @@ spec:
       services:
         - name: hyperdx
           port: 3000
-  tls:
-    certResolver: letsencrypt
+  tls: {}   # wildcard from the default TLSStore (cert-manager); Traefik does no ACME

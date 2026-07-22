@@ -20,5 +20,4 @@ spec:
         - name: argocd-server
           port: 80
           scheme: h2c
-  tls:
-    certResolver: letsencrypt
+  tls: {}   # wildcard from the default TLSStore (cert-manager); Traefik does no ACME

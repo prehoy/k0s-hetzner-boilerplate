@@ -2,7 +2,10 @@
   hosts: lb_main
   become: true
   vars:
-    floating_ip: 203.0.113.20   # CHANGEME — your LB floating IP
+    # floating_ip is NOT set here on purpose: it comes from [lb_main:vars] in the generated inventory
+    # (terraform's hcloud_floating_ip.lb_main). A play var would silently outrank the inventory value,
+    # which is how this ended up aliasing a TEST-NET placeholder onto real NICs while DNS pointed at
+    # the real floating IP — ingress dead, nothing obviously misconfigured.
     cloud_private_network_adapter: enp7s0
     floating_ip_name: lb-main
     # hetzner_api_token: ANSIBLE VAULT
@@ -38,21 +41,21 @@
         path: /opt/hcloud-ip
         mode: "0755"
 
-    - name: Verify Netplan Configuration file exists
-      stat:
-        path: /etc/netplan/60-floating-ip.yaml
-      register: netplan_config
-
-    - name: If file does not exist, create it
+    # Rendered unconditionally: `template` is already idempotent (it rewrites only when the content
+    # differs), so guarding on "does the file exist" doesn't save work — it just makes a wrong value
+    # permanent. It previously pinned whatever floating_ip the first run happened to see, so fixing
+    # the variable changed nothing and the LB kept aliasing a stale address.
+    # 0600: netplan warns about world-readable configs.
+    - name: Render the floating-IP netplan config
       template:
         src: ./templates/60-floating-ip.yaml.j2
         dest: /etc/netplan/60-floating-ip.yaml
-        mode: "0644"
-      when: not netplan_config.stat.exists
+        mode: "0600"
+      register: netplan_config
 
     - name: Apply Netplan Configuration
       command: netplan apply
-      when: not netplan_config.stat.exists
+      when: netplan_config.changed
 
     - name: Install Keepalived
       apt:

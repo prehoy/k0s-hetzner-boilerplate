@@ -1,0 +1,30 @@
+# ClusterIssuers + the wildcard Certificate + the default TLSStore. Split from the cert-manager app so
+# it syncs AFTER the controller's CRDs exist (sync-wave 2).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: cert-manager-config
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  project: default
+  source:
+    repoURL: git@github.com:YOUR_ORG/infra.git
+    targetRevision: main
+    path: gitops/base/cert-manager
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: cert-manager
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    # The ClusterIssuer/Certificate CRDs are created by the cert-manager app in wave 1; tolerate the
+    # brief window where they don't exist yet rather than flapping the app to Degraded.
+    retry:
+      limit: 5
+      backoff:
+        duration: 15s
+        maxDuration: 3m
+        factor: 2
