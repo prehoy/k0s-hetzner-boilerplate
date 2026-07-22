@@ -1,0 +1,36 @@
+# cert-manager — issues TLS certs and stores them in Secrets, so Traefik never runs ACME itself.
+#
+# WHY THIS EXISTS: the in-cluster Traefik is a DaemonSet on every node (hostNetwork). If each pod ran
+# its own ACME resolver (the old certificatesResolvers block), all N pods would request the same certs
+# concurrently on every boot/rollout — tripping Let's Encrypt's duplicate-certificate limit (5/week
+# per identical host set) and racing on the shared _acme-challenge DNS record. Traefik OSS has no
+# distributed ACME store, so a shared acme.json can't fix it (multi-writer file corruption).
+# cert-manager does the challenge ONCE, centrally, with state in etcd — see gitops/base/cert-manager/.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: cert-manager
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"   # controller + CRDs before the issuers/cert in cert-manager-config
+spec:
+  project: default
+  source:
+    repoURL: https://charts.jetstack.io
+    chart: cert-manager
+    targetRevision: v1.16.2
+    helm:
+      releaseName: cert-manager
+      values: |
+        crds:
+          enabled: true
+          keep: true
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: cert-manager
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

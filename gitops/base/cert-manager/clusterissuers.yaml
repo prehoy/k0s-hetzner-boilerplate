@@ -1,0 +1,40 @@
+# Two ACME issuers sharing the Cloudflare DNS-01 solver. The wildcard Certificate references
+# letsencrypt-prod; point it at letsencrypt-staging first to dry-run issuance without spending the
+# weekly rate limit (staging certs are untrusted — browsers will warn, that's expected).
+#
+# ClusterIssuer (cluster-scoped) reads its secrets from the cert-manager namespace: both the ACME
+# account key (created by cert-manager) and the Cloudflare token (sealedsecret-cloudflare.yaml) live
+# there. DNS-01 is required because HTTP-01 can't validate a wildcard.
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-staging
+spec:
+  acme:
+    server: https://acme-staging-v02.api.letsencrypt.org/directory
+    email: office@example.com
+    privateKeySecretRef:
+      name: letsencrypt-staging-account-key
+    solvers:
+      - dns01:
+          cloudflare:
+            apiTokenSecretRef:
+              name: cloudflare-api-token
+              key: api-token
+---
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-prod
+spec:
+  acme:
+    server: https://acme-v02.api.letsencrypt.org/directory
+    email: office@example.com
+    privateKeySecretRef:
+      name: letsencrypt-prod-account-key
+    solvers:
+      - dns01:
+          cloudflare:
+            apiTokenSecretRef:
+              name: cloudflare-api-token
+              key: api-token

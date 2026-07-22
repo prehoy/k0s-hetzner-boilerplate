@@ -1,4 +1,4 @@
-# Grafana UI at grafana.example.com (Traefik, letsencrypt certResolver — same pattern as hyperdx).
+# Grafana UI at grafana.example.com. TLS is the cluster wildcard from the default TLSStore (cert-manager).
 # PREREQ: DNS A/CNAME grafana.example.com -> the LB. Prometheus/Alertmanager are NOT exposed (in-cluster only).
 # web(:80) -> https redirect so a typed bare domain (http://grafana.example.com) doesn't hit Traefik's 404.
 apiVersion: traefik.io/v1alpha1
@@ -25,8 +25,7 @@ spec:
       services:
         - name: grafana
           port: 3000
-  tls:
-    certResolver: letsencrypt
+  tls: {}   # wildcard from the default TLSStore (cert-manager); Traefik does no ACME
 ---
 apiVersion: traefik.io/v1alpha1
 kind: IngressRoute
@@ -62,8 +61,7 @@ spec:
       services:
         - name: alertmanager
           port: 9093
-  tls:
-    certResolver: letsencrypt
+  tls: {}   # wildcard from the default TLSStore (cert-manager); Traefik does no ACME
 ---
 apiVersion: traefik.io/v1alpha1
 kind: IngressRoute
@@ -98,8 +96,7 @@ spec:
       services:
         - name: prometheus
           port: 9090
-  tls:
-    certResolver: letsencrypt
+  tls: {}   # wildcard from the default TLSStore (cert-manager); Traefik does no ACME
 ---
 apiVersion: traefik.io/v1alpha1
 kind: IngressRoute
@@ -139,5 +136,4 @@ spec:
       services:
         - name: alertmanager
           port: 9093
-  tls:
-    certResolver: letsencrypt
+  tls: {}   # wildcard from the default TLSStore (cert-manager); Traefik does no ACME

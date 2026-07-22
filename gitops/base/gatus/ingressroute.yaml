@@ -13,5 +13,4 @@ spec:
       services:
         - name: gatus
           port: 8080
-  tls:
-    certResolver: letsencrypt
+  tls: {}   # wildcard from the default TLSStore (cert-manager); Traefik does no ACME
